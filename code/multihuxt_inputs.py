@@ -8,38 +8,29 @@ Created on Tue Jun 24 11:09:53 2025
 import astropy.units as u
 from astropy.time import Time
 import datetime
-# import datetime
-# import os
-# import astropy.units as u
-# import glob
-# import re
 import numpy as np
 import time
-from sunpy.net import Fido
-from sunpy.net import attrs
-from sunpy.timeseries import TimeSeries
-# import requests
 import matplotlib.pyplot as plt
 import pandas as pd
-from astroquery.jplhorizons import Horizons
-# import dask
-import pickle
 import tqdm
 import copy
 import tensorflow as tf
 
+import tensorflow_probability  as     tfp
+
 import sys
 sys.path.append('/Users/mrutala/projects/HUXt/code/')
-sys.path.append('/Users/mrutala/projects/OHTransients/code/')
+sys.path.append('/Users/mrutala/projects/ASWEstimator/code/')
 import huxt as H
 import huxt_analysis as HA
 import huxt_inputs as Hin
 import huxt_atObserver as hao
 import multihuxt_readers as mr
-# from scipy import ndimage
-# from scipy import stats
-# from sklearn.metrics import root_mean_squared_error as rmse
-# from astroquery.jplhorizons import Horizons
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
+
+
+import gpflow
+import GPFlowEnsemble as gpflowf
 
 # import huxt_inputs_wsa as Hin_wsa
 import queryDONKI
@@ -51,12 +42,19 @@ except:
 
 """
 Notes:
-    - self.availableBackgroundData is a misnomer. This is actually in-situ 
+    - self.solar_wind is a misnomer. This is actually in-situ 
     solar wind data, not background (e.g. non-Transient) data specifically
+    
+Overview: 
+    multihuxt_inputs keeps track of the:
+        (in-situ) data:
+        transients:
+        background:
+        
 """
     
 # %%
-import tensorflow_probability  as     tfp
+
 class multihuxt_inputs:
     def __init__(self, start, stop, 
                  rmax=1, latmax=10):
@@ -64,7 +62,7 @@ class multihuxt_inputs:
         self.stop = stop
         self.radmax = rmax * u.AU
         self.latmax = latmax * u.deg
-        self.innerbound= 21.5 * u.solRad
+        self.innerbound= 215 * u.solRad # 21.5 * u.solRad
         
         self.usw_minimum = 200 * u.km/u.s
         self.SiderealCarringtonRotation = 27.28 * u.day
@@ -93,7 +91,16 @@ class multihuxt_inputs:
         
         
         return
-        
+    
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # 
+    # ----------------------------------------------------------------------
+    def copy(self):
+        return copy.deepcopy(self)
+    
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # Ease-of-use time properties
+    # ----------------------------------------------------------------------
     @property
     def starttime(self):
         return Time(self.start)
@@ -122,11 +129,21 @@ class multihuxt_inputs:
     @property
     def simstoptime(self):
         return self.stoptime + self.simpadding[1]
-    
+
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # Methods relating to managing data sources
+    # ----------------------------------------------------------------------
+    @property
+    def supported_sources(self):
+        supported_sources = [
+            'omni', 'parker solar probe', 'stereo a', 'stereo b', 'ulysses', 
+            'voyager 1', 'voyager 2'
+            ]
+        return supported_sources
     @property
     def availableSources(self):
         if self._availableSources is None:
-            availableSources = set(self.availableBackgroundData.columns.get_level_values(0))
+            availableSources = set(self.solar_wind.columns.get_level_values(0))
             availableSources = set(availableSources) - {'mjd'}
             self._availableSources = sorted(availableSources)
         return self._availableSources
@@ -136,13 +153,6 @@ class multihuxt_inputs:
         self._availableSources.extend(addedSources)
         self._availableSources = sorted(self._availableSources)
         
-    # @property
-    # def boundarySources(self):
-    #     # # If the time span is short enough that no ICMEs are measured
-    #     # boundarySources = set(self.availableTransientData['affiliated_source'])
-    #     # Temporary fix: hardcoding
-    #     boundarySources = {'omni', 'stereo a', 'stereo b'}
-    #     return sorted(boundarySources)
     @property
     def boundarySources(self):
         if self._boundarySources is None:
@@ -152,10 +162,7 @@ class multihuxt_inputs:
     @boundarySources.setter
     def boundarySources(self, boundarySources):
         self._boundarySources = boundarySources
-    
-    def copy(self):
-        return copy.deepcopy(self)
-    
+        
     # def _identify_source(self, source):  
     #     source_aliases = {'omni': ['omni'],
     #                       'parker solar probe': ['parkersolarprobe', 'psp', 'parker solar probe'],
@@ -167,15 +174,15 @@ class multihuxt_inputs:
     #                       # 'maven': ['maven'],
     #                       'voyager 1': ['voyager1', 'voyager 1'],
     #                       'voyager 2': ['voyager2', 'voyager 2']}
-        
-    def get_availableBackgroundData(self, sources=None):
-        
-        all_sources = ['omni', 'parker solar probe', 'stereo a', 'stereo b',
-                       'ulysses', 'voyager 1', 'voyager 2']
+    
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # Methods relating to (in-situ, unprocessed) data
+    # ----------------------------------------------------------------------
+    def getSolarWind(self, sources=None):
         
         # Check if sources are specified; if not, use them all
         if sources is None:
-            sources = all_sources
+            sources = self.supported_sources
         else:
             breakpoint()
             #!!!! Add functionality to search alias dictionary
@@ -194,56 +201,36 @@ class multihuxt_inputs:
         available_data_df = pd.concat(available_data_dict, axis='columns')
         available_data_df['mjd'] = Time(available_data_df.index).mjd
         
-        # self.availableSources.extend(available_sources)
-        self.availableBackgroundData = available_data_df
+        self.solar_wind = available_data_df
         
         return
     
-    def filter_availableBackgroundData(self):
+    def filterSolarWind(self):
         
         sources_to_remove = []
         for source in self.availableSources:
             
             # Where is the source out of radial and latitudinal range?
-            out_of_range = (np.abs(self.availableBackgroundData[(source, 'lat_HGI')]) > np.abs(self.latmax)) &\
-                           (self.availableBackgroundData[(source, 'rad_HGI')] > self.radmax)
+            out_of_range = (np.abs(self.solar_wind[(source, 'lat_HGI')]) > np.abs(self.latmax)) &\
+                           (self.solar_wind[(source, 'rad_HGI')] > self.radmax)
             
             # Set these as NaNs
-            self.availableBackgroundData.loc[out_of_range, source] = np.nan
+            self.solar_wind.loc[out_of_range, source] = np.nan
             
             # If no data is in range, delete the source and columns entirely
             if out_of_range.all() == True:
                 sources_to_remove.append(source)
-                self.availableBackgroundData.drop(columns = source, level = 0, inplace = True)
+                self.solar_wind.drop(columns = source, level = 0, inplace = True)
                           
         # for source in sources_to_remove:
         #     self.availableSources.remove(source)
             
         return
     
-    # def sort_availableSources(self, column='rad_HGI'):
-        
-    #     mean_vals = {}
-    #     for source in self.availableSources:
-    #         mean_vals[source] = np.mean(self.availableBackgroundData[(source, column)])
-            
-    #     order = np.argsort(list(mean_vals.values()))
-    #     self.availableSources = np.array(list(mean_vals.keys()))[order]
-        
-    #     return
-    
-    # def _print_url(self, filename, url):
-    #     with open(filename, 'w') as f:
-    #         print('<html>', file=f)
-    #         print(' <body>', file=f)
-    #         print('  <script type="text/javascript">', file=f)
-    #         print('   window.location.href = "{}"'.format(url), file=f)
-    #         print('  </script>', file=f)
-    #         print(' </body>', file=f)
-    #         print('</html>', file=f)
-    #     return
-    
-    def get_availableTransientData(self, sources=None):
+    # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # Handling transients
+    # ----------------------------------------------------------------------
+    def getTransients(self, sources=None):
         
         location_aliases = {'omni': 'Earth',
                             'stereo a': 'STEREO%20A',
@@ -283,7 +270,7 @@ class multihuxt_inputs:
         if len(availableTransientData_df) > 0:
             availableTransientData_df['mjd'] = Time(availableTransientData_df['eventTime'])
 
-        self.availableTransientData = availableTransientData_df 
+        self.transients = availableTransientData_df 
         
         # Add ICMEs to background data
         self.set_ICMEs()
@@ -294,17 +281,17 @@ class multihuxt_inputs:
         
         # Default to the icme_df attribute
         if icme_df is None:
-            icme_df = self.availableTransientData
+            icme_df = self.transients
             
-        # Drop ICME columns already assigned to self.availableBackgroundData
-        if 'ICME' in self.availableBackgroundData.columns.get_level_values(1):
-            self.availableBackgroundData.drop('ICME', axis=1, level=1, inplace=True)
+        # Drop ICME columns already assigned to self.solar_wind
+        if 'ICME' in self.solar_wind.columns.get_level_values(1):
+            self.solar_wind.drop('ICME', axis=1, level=1, inplace=True)
         
         for source in self.availableSources:
             
             # Format insitu data for HUXt's remove_ICMEs function
-            insitu = self.availableBackgroundData[source].copy()
-            insitu.loc[:, 'mjd'] = self.availableBackgroundData.loc[:, 'mjd']
+            insitu = self.solar_wind[source].copy()
+            insitu.loc[:, 'mjd'] = self.solar_wind.loc[:, 'mjd']
             
             # Format ICME data for HUXt's remove_ICMEs function
             icmes = icme_df.query('affiliated_source == @source')
@@ -334,8 +321,8 @@ class multihuxt_inputs:
                 icme_series = [None] * len(insitu)
                 
             # Add ICME indices to background data
-            idx = self.availableBackgroundData.columns.get_loc((source, insitu.columns[-2]))
-            self.availableBackgroundData.insert(idx+1, (source, 'ICME'), icme_series)
+            idx = self.solar_wind.columns.get_loc((source, insitu.columns[-2]))
+            self.solar_wind.insert(idx+1, (source, 'ICME'), icme_series)
                           
         return insitu_noicme['U'].isna()
     
@@ -346,7 +333,7 @@ class multihuxt_inputs:
         if len(self._ephemeris) == 0:
             print("No ephemeris loaded. Now generating...")
             for source in self.availableSources:
-                eph = H.Observer(source, Time(self.availableBackgroundData.index))
+                eph = H.Observer(source, Time(self.solar_wind.index))
                 self._ephemeris[source] = eph
                     
         return self._ephemeris
@@ -365,14 +352,17 @@ class multihuxt_inputs:
         synodic_period = 1/(sun_speed - source_speed) * (2 * np.pi * u.rad)
         
         return synodic_period
-
-    def generate_backgroundDistributions(self,
+    
+    # =============================================================================
+    #     
+    # =============================================================================
+    def makeBackgroundDistribution(self,
                                          inducing_variable=True,
                                          GP = False, interpolate = False,
                                          target_noise = 1e-2,
                                          max_chunk_length = 1024,
                                          n_samples = 1):
-        target_variables = ['U', 'Br']
+        target_variables = ['U']
         
         # summary holds summary statistics (mean, standard deviation)
         all_summary = {}
@@ -385,8 +375,8 @@ class multihuxt_inputs:
         for source in self.boundarySources:
             
             # Get a copy of the insitu data
-            insitu_df = self.availableBackgroundData.loc[:, source].copy()
-            insitu_df['mjd'] = self.availableBackgroundData.loc[:, 'mjd']
+            insitu_df = self.solar_wind.loc[:, source].copy()
+            insitu_df['mjd'] = self.solar_wind.loc[:, 'mjd']
             
             # Set all ICME rows to NaNs
             data_columns = list(set(insitu_df.columns) - set(['ICME', 'mjd']))
@@ -398,21 +388,20 @@ class multihuxt_inputs:
                 
                 carrington_period = self.get_carringtonPeriod(self.ephemeris[source].r.mean())
                 
-                summary, scalers, models = self._impute_backgroundDistributions(
+                summary, models = self._imputeBackgroundDistribution(
                     insitu_df, 
                     carrington_period,
                     target_variables=target_variables, 
                     target_noise=target_noise,
-                    max_chunk_length=max_chunk_length,
-                    n_samples=n_samples)
+                    max_chunk_length=max_chunk_length)
                 
-                all_scalers.update({source: scalers})
+                # all_scalers.update({source: scalers})
                 all_models.update({source: models})
                 
             elif interpolate is True:
                 # self._backgroundDistributionMethod = 'extend'
                 
-                summary = self._extend_backgroundDistributions(
+                summary = self._extendBackgroundDistributions(
                     insitu_df,
                     target_variables=target_variables,
                     n_samples=n_samples)
@@ -425,39 +414,27 @@ class multihuxt_inputs:
                 breakpoint()
             
             all_summary.update({source: summary})
-            
-            
-            # full_samples = []
-            # for i in range(num_samples):
-            #     full_sample_df = insitu_noICME.copy(deep=True)
-            #     for target_var in target_variables:
-            #         full_sample_df[target_var] = samples[i][target_var]
-                    
-            #     full_samples.append(full_sample_df)
-            
-            # Add to dictionary with source
-            
-            # all_samples[source] = full_samples
         
         # Convert all_summary into a df for return
+        
         self.backgroundDistributions = pd.concat(all_summary, axis=1)
-        self.backgroundDistributions['mjd'] = self.availableBackgroundData['mjd']
+        self.backgroundDistributions['mjd'] = self.solar_wind['mjd']
         
         # Assign scalers and models to attributes
         self._backgroundScalers = all_scalers
         self._backgroundModels = all_models
         
         # For convenience, draw samples here
-        self.sample_backgroundDistributions(n_samples=n_samples)
+        self.sampleBackgroundDistributions(n_samples=n_samples)
         
         return 
     
-    def sample_backgroundDistributions(self, n_samples=1, chunk_size=2000, cpu_fraction=0.75):
+    def sampleBackgroundDistributions(self, n_samples=1, chunk_size=2000, cpu_fraction=0.75):
         
         df = self.backgroundDistributions.copy()
         samples = [self.backgroundDistributions.copy() for _ in range(n_samples)]
         
-        if len(self._backgroundScalers.keys()) == 0:
+        if len(self._backgroundModels.keys()) == 0:
             # Background is linearly interpolated, without uncertainty
             # All samples are identical
             for i in range(n_samples):
@@ -472,104 +449,28 @@ class multihuxt_inputs:
             for source in self._backgroundModels.keys():
                 
                 # Scale MJD
-                X_scaler = self._backgroundScalers[source]['mjd']
-                X = X_scaler.transform(df['mjd'].to_numpy()[:,None])
+                # X_scaler_list = self._backgroundScalers[source]['mjd']
+                # X = [scaler.transform(df['mjd'].to_numpy()[:,None]) for scaler in X_scaler_list]
+                mjd = df['mjd'].to_numpy()[:,None]
                 
                 for var in self._backgroundModels[source].keys():
                     
-                    Y_scaler = self._backgroundScalers[source][var]
+                    # Y_scaler_list = self._backgroundScalers[source][var]
                     
                     # Draw samples
-                    Y_samples = self._backgroundModels[source][var].predict_f_samples(
-                        X, n_samples, chunk_size, cpu_fraction
-                        )
+                    results = self._backgroundModels[source][var].predict_f_samples(
+                        unscaled_X=mjd, num_samples=n_samples, 
+                        chunk_size=chunk_size, cpu_fraction=cpu_fraction)
                     
                     for i in range(n_samples):
-                        samples[i][(source, var)] = Y_scaler.inverse_transform(Y_samples[i])
-                        samples[i] = samples[i].drop([(source, var+'_mu'), (source, var+'_sigma')], axis=1)
+                        samples[i][(source, var)] = results[i]
+                        samples[i] = samples[i].drop(columns=[(source, var+'_mu'), (source, var+'_sigma')])
                     
-            
         self.backgroundSamples = samples
-                    
+        
         return         
-
-        # # =============================================================================
-        # # Visualization
-        # # =============================================================================
-        # fig, axs = plt.subplots(nrows=len(self.boundarySources), sharex=True, sharey=True,
-        #                         figsize=(6, 4.5))
-        # plt.subplots_adjust(bottom=(0.16), left=(0.12), top=(1-0.08), right=(1-0.06),
-        #                     hspace=0)
-        # if len(self.boundarySources) == 1:
-        #     axs = [axs]
-        # for ax, source in zip(axs, self.boundarySources):
-            
-        #     ax.scatter(self.availableBackgroundData['mjd'], self.availableBackgroundData[(source, 'U')],
-        #                color='black', marker='.', s=2, zorder=3,
-        #                label = 'Raw Data')
-        #     # ax.scatter(self.availableBackgroundData.loc[indexICME, 'mjd'], 
-        #     #            self.availableBackgroundData.loc[indexICME, (source, 'U')],
-        #     #            edgecolor='xkcd:scarlet', marker='o', s=6, zorder=2, facecolor='None', lw=0.5,
-        #     #            label = 'ICMEs from DONKI')
-            
-        #     # If indexICME is not supplied, look it up
-        #     if ICME_df is None:
-        #         indexICME = self.get_indexICME(source)
-        #     else:
-        #         indexICME = ICME_df[source]
-        #     onlyICMEs = self.availableBackgroundData.copy(deep=True)
-        #     onlyICMEs.loc[~indexICME, :] = np.nan
-        #     # ax.plot(onlyICMEs['mjd'], 
-        #     #         onlyICMEs[(source, 'U')],
-        #     #         color='xkcd:ruby', zorder=2, lw=2,
-        #     #         label = 'DONKI ICMEs')
-        #     ax.scatter(onlyICMEs['mjd'], 
-        #                onlyICMEs[(source, 'U')],
-        #                color='xkcd:bright blue', zorder=3, marker='x', s=4, lw=1,
-        #                label = 'DONKI ICMEs')
-            
-        #     #ax.scatter(Xc, Yc, label='Inducing Points', color='C1', marker='o', s=6, zorder=4)
-        
-        #     ax.plot(self.backgroundDistributions['mjd'], 
-        #             self.backgroundDistributions[(source, 'U_mu')], 
-        #             label="GP Prediction", color='xkcd:pumpkin', lw=1.5, zorder=3)
-        #     ax.fill_between(
-        #             self.backgroundDistributions['mjd'],
-        #             (self.backgroundDistributions[(source, 'U_mu')] - 1.96 * self.backgroundDistributions[(source, 'U_sigma')]),
-        #             (self.backgroundDistributions[(source, 'U_mu')] + 1.96 * self.backgroundDistributions[(source, 'U_sigma')]),
-        #             alpha=0.33, color='xkcd:pumpkin',
-        #             label=r"95% CI", zorder=0)
-            
-        #     # for fo_sample in fo_samples:
-        #     #     ax.plot(Xo.ravel(), fo_sample.ravel(), lw=1, color='C3', alpha=0.2, zorder=-1)
-        #     # ax.plot(Xo.ravel()[0:1], fo_sample.ravel()[0:1], lw=1, color='C3', alpha=1, 
-        #     #         label = 'Samples about Mean')
-        
-        #     # ax.legend(scatterpoints=3, loc='upper right')
-            
-        #     ax.grid(True, which='major', axis='x',
-        #             color='black', ls=':', alpha=0.5)
-        #     ax.annotate(source, (0, 1), (1,-1), 
-        #                 xycoords='axes fraction', textcoords='offset fontsize',
-        #                 ha='left', va='top',
-        #                 color='xkcd:black')
-        
-        # axs[0].legend(loc='lower left', bbox_to_anchor=(0., 1.05, 1.0, 0.1),
-        #               ncols=4, mode="expand", borderaxespad=0.,
-        #               scatterpoints=3, markerscale=2)
-        # ax.set(xlim=[self.starttime.mjd, self.stoptime.mjd],
-        #        ylim=[250, 850])
-        # ax.secondary_xaxis(-0.23, 
-        #                    functions=(lambda x: x-self.starttime.mjd, lambda x: x+self.starttime.mjd))
-        
-        # fig.supxlabel('Date [MJD]; Days from {}'.format(datetime.datetime.strftime(self.start, '%Y-%m-%d %H:%M')))
-        # fig.supylabel('Solar Wind Speed [km/s]')
-        
-        # plt.show()
-        
-        # return
     
-    def _extend_backgroundDistributions(self, input_df,
+    def _extendBackgroundDistributions(self, input_df,
                                         target_variables = ['U', 'Br'],
                                         noise_constant = 0.0,
                                         n_samples = 0):
@@ -598,136 +499,118 @@ class multihuxt_inputs:
             df.drop(columns=var, inplace=True)
 
         return df
-        
-        # for source in self.boundarySources:
-            
-        #     # Format insitu data for HUXt's remove_ICMEs function
-        #     # insitu = self.availableBackgroundData[source].copy()
-        #     insitu.loc[:, 'mjd'] = self.availableBackgroundData.loc[:, 'mjd']
-            
-        #     # Format ICME data for HUXt's remove_ICMEs function
-        #     icmes = self.availableTransientData.query('affiliated_source == @source')
-        #     icmes.reset_index(inplace=True, drop=True)
-            
-        #     if 'eventTime' in icmes.columns: 
-        #         icmes = icmes.rename(columns = {'eventTime': 'Shock_time'})
-        #         icmes['ICME_end'] = [row['Shock_time'] + datetime.timedelta(days=(row['duration'])) 
-        #                              for _, row in icmes.iterrows()]
-            
-        #     # Interpolate over existing data gaps (NaNs), so they aren't caught as ICMEs
-        #     # insitu.interpolate(method='linear', axis='columns', limit_direction='both', inplace=True)
-            
-            
-        #     breakpoint()
-        #     # Extract the timesteps during which there is an ICME
-        #     if len(icmes) > 0:
-        #         insitu_noicme = Hin.remove_ICMEs(insitu, icmes, 
-        #                                          params=['U', 'Br'], 
-        #                                          interpolate = True, 
-        #                                          icme_buffer = self._icme_duration_buffer, 
-        #                                          interp_buffer = self._icme_interp_buffer)
-                
-                
-        # print("_extend_backgroundDistributions has not yet been implemented!")
-        # breakpoint()
-                
-        
-        # return backgroundDistribution_df, backgroundSamples
     
-    def _impute_backgroundDistributions(self, df, carrington_period,
-                                        target_variables = ['U', 'Br'],
+    def _imputeBackgroundDistribution(self, df, carrington_period,
+                                        target_variables = ['U'],
                                         target_noise = 1e-2,
-                                        max_chunk_length = 1024,
-                                        n_samples = 0):
+                                        max_chunk_length = 1024
+                                        ):
         
-        # Scale MJD independently
-        time_scaler = StandardScaler() # GPFlow prefers centered & whitened 
-        time_scaler.fit(df['mjd'].to_numpy()[:,None])
-        
-        X_all = time_scaler.transform(df['mjd'].to_numpy()[:,None])
+        # Physically motivated data chunking
+        # Do this before fitting so each chunk may have an appropriate mean function
+        df_chunks = self._getChunksInTime(df, delta=90 * u.day)
         
         # Initialize objects to hold results from looping over target_variables
         bgDistribution_df = pd.DataFrame(index=df.index)
-        bgScalers = {'mjd': time_scaler}
+        bgScalers = {}
         bgGPModels = {}
         
         for target_var in target_variables:
-        
-            # Set up scaler for target variable and save it
-            val_scaler = StandardScaler()
-            val_scaler.fit(df[target_var].to_numpy()[:,None])
-            bgScalers.update({target_var: val_scaler})
+            bgScalers[target_var] = {'mjd': [], 'val': []}
+            bgGPModels[target_var] = {}
             
-            Y_all = val_scaler.transform(df[target_var].to_numpy()[:,None])
-            
-            # Remove NaNs in Y from both X & Y
-            valid_index = ~df[target_var].isna().to_numpy()
-            X = X_all[valid_index,:]
-            Y = Y_all[valid_index,:]
-            
-            # =================================================================
-            # Define kernel for each dimension separately, then altogether
-            # =================================================================
-            period_rescaled = carrington_period.to(u.day).value / time_scaler.scale_[0]
-            period_gp = gpflow.Parameter(period_rescaled, trainable=False)
-            
-            # Only predict 1 Carrington Rotation forward
-            min_x = 0
-            mid_x = period_rescaled / 2
-            max_x = period_rescaled
-            
-            lengthscale_gp = gpflow.Parameter(mid_x, 
-                transform = tfp.bijectors.SoftClip(min_x, max_x))
-            
-            base_kernel = gpflow.kernels.RationalQuadratic(lengthscales = lengthscale_gp)
-            amplitude_kernel = gpflow.kernels.RationalQuadratic(lengthscales = lengthscale_gp)
-            period_kernel = gpflow.kernels.Periodic(
-                gpflow.kernels.SquaredExponential(lengthscales=period_gp),
-                period=period_gp)
-            
-            kernel = base_kernel + amplitude_kernel * period_kernel
-            
-            # =============================================================================
-            # ~Fancy~ Chunking  
-            # =============================================================================
-            Xc, Yc, optimized_noise = self._optimize_clustering(X, Y, target_noise_variance=target_noise)
-            XYc = np.column_stack([Xc, Yc])
-            
-            n_chunks = int(np.ceil(len(Xc)/max_chunk_length))
-            
-            sort = np.argsort(XYc[:,0]) # sort by MJD
-            XYc_chunks = np.array_split(XYc[sort,:], n_chunks)
-            Xc_chunks = [chunk[:,0][:,None] for chunk in XYc_chunks]
-            Yc_chunks = [chunk[:,1][:,None] for chunk in XYc_chunks]
-            
+            X_list, Y_list, k_list = [], [], []
+            for df_chunk in df_chunks:
+                
+                # Map MJD onto the interval [0,10]
+                time_scaler = MinMaxScaler(feature_range=(0,10))
+                time_scaler.fit(df_chunk['mjd'].to_numpy()[:,None])
+                
+                X_all = time_scaler.transform(df_chunk['mjd'].to_numpy()[:,None])
+                
+                bgScalers[target_var]['mjd'].append(time_scaler)
+                # X_scaler_list.append(time_scaler)
+                
+                # Map the target variable onto a centered normal distribution
+                val_scaler = StandardScaler()
+                val_scaler.fit(df_chunk[target_var].to_numpy()[:,None])
+                
+                # bgScalers.update({target_var: val_scaler})
+                bgScalers[target_var]['val'].append(val_scaler)
+                # Y_scaler_list.append(val_scaler)
+                
+                Y_all = val_scaler.transform(df_chunk[target_var].to_numpy()[:,None])
+                
+                # Remove NaNs in Y from both X & Y
+                valid_index = ~df_chunk[target_var].isna().to_numpy()
+                X_train = X_all[valid_index,:]
+                Y_train = Y_all[valid_index,:]
+                
+                # =================================================================
+                # Define kernel for each dimension separately, then altogether
+                # =================================================================
+                period_rescaled = np.float64(carrington_period.to(u.day).value * time_scaler.scale_[0])
+                period_gp = gpflow.Parameter(period_rescaled, trainable=False)
+                
+                # Only predict 1 Carrington Rotation forward
+                min_x = np.float64(0)
+                mid_x = period_rescaled
+                max_x = np.float64(10) # 4*period_rescaled
+                
+                lengthscale_gp = gpflow.Parameter(mid_x, 
+                    transform = tfp.bijectors.SoftClip(min_x, max_x))
+                
+                base_kernel = gpflow.kernels.RationalQuadratic(lengthscales = lengthscale_gp)
+                amplitude_kernel = gpflow.kernels.SquaredExponential(lengthscales = lengthscale_gp)
+                period_kernel = gpflow.kernels.Periodic(
+                    gpflow.kernels.SquaredExponential(lengthscales=period_gp),
+                    period=period_gp)
+                
+                kernel = base_kernel + amplitude_kernel * period_kernel
+                # kernel = base_kernel + period_kernel
+                
+                # =============================================================================
+                # ~Fancy~ Chunking  
+                # =============================================================================
+                # Xc, Yc, optimized_noise = self._optimize_clustering(X, Y, target_noise_variance=target_noise)
+                # XYc = np.column_stack([Xc, Yc])
+                
+                # n_chunks = int(np.ceil(len(Xc)/max_chunk_length))
+                
+                # sort = np.argsort(XYc[:,0]) # sort by MJD
+                # XYc_chunks = np.array_split(XYc[sort,:], n_chunks)
+                # Xc_chunks = [chunk[:,0][:,None] for chunk in XYc_chunks]
+                # Yc_chunks = [chunk[:,1][:,None] for chunk in XYc_chunks]
+                
+                #!!!!!!! Change this subsampling
+                X_list.append(X_train)
+                Y_list.append(Y_train)
+                k_list.append(kernel)
+              
             # =============================================================================
             # Plug into the ensemble GP model
             # =============================================================================
-            model = GPFlowEnsemble(kernel, Xc_chunks, Yc_chunks, noise_variance=0.05) # optimized_noise)
-            bgGPModels.update({target_var: model})
+            model = gpflowf.EnsembleGPR(X_list, Y_list, k_list, bgScalers[target_var]['mjd'], bgScalers[target_var]['val'])
+            model.optimize()
+            
+            # model = gpflowf.GPFlowEnsemble(kernel, X_list, Y_list, noise_variance=0.05) # optimized_noise)
+            bgGPModels[target_var] = model
             
             # =================================================================
             # Get predictions for all MJD (filling in gaps)
             # and inverse transform
             # =================================================================
-            Xo = time_scaler.transform(df['mjd'].to_numpy()[:, None])
-            fo_mu, fo_var = model.predict_f(Xo, chunk_size=2048, cpu_fraction=0.6)
-            fo_sig = np.sqrt(fo_var)
-            # yo_mu, yo_var = model.predict_y(Xo)
-            # yo_sig = np.sqrt(yo_var)
             
-            # fo_samples = model.predict_f_samples(Xo, num_samples, chunk_size=2048, cpu_fraction=0.6)
+            # Xo_list = [scaler.transform(df['mjd'].to_numpy()[:,None]) for scaler in bgScalers['mjd']]
+            X = df['mjd'].to_numpy()[:,None]
             
-            mjd = df['mjd'].to_numpy()
-            val_f_mu = val_scaler.inverse_transform(fo_mu).flatten()
-            val_f_sigma = (val_scaler.scale_ * fo_sig).flatten()
-            # val_f_samples = [val_scaler.inverse_transform(fo).flatten() for fo in fo_samples]
-            # val_y_mu = val_scaler.inverse_transform(yo_mu).flatten()
-            # val_y_sigma = (val_scaler.scale_ * yo_sig).flatten()
+            # These custom wrappers return data-scaled Y given data-scaled X
+            fo_mu, fo_sigma2 = model.predict_f(unscaled_X=X, cpu_fraction=0.75, chunk_size=2000)
+            # fo_samples = model.predict_f_samples(unscaled_X=X, cpu_fraction=0.75, chunk_size=2000, num_samples=100)
             
-            bgDistribution_df['mjd'] = mjd
-            bgDistribution_df[target_var+'_mu'] = val_f_mu
-            bgDistribution_df[target_var+'_sigma'] = val_f_sigma
+            bgDistribution_df['mjd'] = df['mjd'].to_numpy()
+            bgDistribution_df[target_var+'_mu'] = fo_mu.mean(axis=1)
+            bgDistribution_df[target_var+'_sigma'] = np.sqrt(fo_sigma2.mean(axis=1))
         
         # Cast res and samples into full dfs
         bgDistribution_full_df = df.copy(deep=True)
@@ -736,49 +619,49 @@ class multihuxt_inputs:
             bgDistribution_full_df[target_var+'_mu'] = bgDistribution_df[target_var+'_mu']
             bgDistribution_full_df[target_var+'_sigma'] = bgDistribution_df[target_var+'_sigma']
         
-        return bgDistribution_full_df, bgScalers, bgGPModels
+        return bgDistribution_full_df, bgGPModels
     
-    def ambient_solar_wind_LI(self, df, target_variables=['U']):
+    # def ambient_solar_wind_LI(self, df, target_variables=['U']):
         
         
-        new_insitu = df.copy(deep=True)
-        new_insitu.drop(columns='U', inplace=True)
+    #     new_insitu = df.copy(deep=True)
+    #     new_insitu.drop(columns='U', inplace=True)
         
-        # Set up dictionaries 
-        gp_variables = {k: {} for k in target_variables}
+    #     # Set up dictionaries 
+    #     gp_variables = {k: {} for k in target_variables}
         
-        for target_var in target_variables: # ['U', 'Br']:
+    #     for target_var in target_variables: # ['U', 'Br']:
             
-            new_insitu[target_var+'_mu'] = df[target_var].interpolate(limit_direction=None)
-            new_insitu[target_var+'_sig'] = new_insitu[target_var+'_mu'].rolling('1d').std()
+    #         new_insitu[target_var+'_mu'] = df[target_var].interpolate(limit_direction=None)
+    #         new_insitu[target_var+'_sig'] = new_insitu[target_var+'_mu'].rolling('1d').std()
             
-            new_var_mu = df[target_var].interpolate(limit_direction=None)
-            new_var_sig = new_var_mu.rolling('1d').std()
-            new_var_cov = np.full((len(new_var_mu), len(new_var_mu)), np.nan)
+    #         new_var_mu = df[target_var].interpolate(limit_direction=None)
+    #         new_var_sig = new_var_mu.rolling('1d').std()
+    #         new_var_cov = np.full((len(new_var_mu), len(new_var_mu)), np.nan)
             
-            new_var_mu = new_var_mu.to_numpy()
-            new_var_sig = new_var_sig.to_numpy()
+    #         new_var_mu = new_var_mu.to_numpy()
+    #         new_var_sig = new_var_sig.to_numpy()
 
-            # # Replace non-ICME regions with real data
-            # noNaN_bool = ~df[var_str].isna()
-            # new_insitu.loc[noNaN_bool, 'U_mu'] = df.loc[noNaN_bool, 'U']
-            # new_insitu.loc[noNaN_bool, 'U_sig'] *= 1/10.
+    #         # # Replace non-ICME regions with real data
+    #         # noNaN_bool = ~df[var_str].isna()
+    #         # new_insitu.loc[noNaN_bool, 'U_mu'] = df.loc[noNaN_bool, 'U']
+    #         # new_insitu.loc[noNaN_bool, 'U_sig'] *= 1/10.
             
-            # # # Save a function to generate samples of f with full covariance
-            # def func(mjd, num_samples):
-            #     fo_samples = []
-            #     for _ in range(num_samples):
-            #         sample = new_insitu.query("@mjd[0] <= mjd <= @mjd[-1]")[var_str+'_mu']
-            #         fo_samples.append(sample)
-            #     fo_samples = np.array(fo_samples)
-            #     return fo_samples
+    #         # # # Save a function to generate samples of f with full covariance
+    #         # def func(mjd, num_samples):
+    #         #     fo_samples = []
+    #         #     for _ in range(num_samples):
+    #         #         sample = new_insitu.query("@mjd[0] <= mjd <= @mjd[-1]")[var_str+'_mu']
+    #         #         fo_samples.append(sample)
+    #         #     fo_samples = np.array(fo_samples)
+    #         #     return fo_samples
             
-            # Assign to dict
-            gp_variables[target_var]['mean'] = new_var_mu
-            gp_variables[target_var]['std'] = new_var_sig
-            gp_variables[target_var]['cov'] = new_var_cov
+    #         # Assign to dict
+    #         gp_variables[target_var]['mean'] = new_var_mu
+    #         gp_variables[target_var]['std'] = new_var_sig
+    #         gp_variables[target_var]['cov'] = new_var_cov
             
-        return gp_variables
+    #     return gp_variables
         
     def generate_boundaryDistributions(self, constant_percent_error=0.0):
         from tqdm import tqdm
@@ -982,7 +865,7 @@ class multihuxt_inputs:
         return
         
     def _impute_boundaryDistributions(self, lat_for3d, lon_for3d, mjd_for3d,
-                                      maximum_span = 120*u.day, 
+                                      maximum_span = 60*u.day, 
                                       **kwargs):
         import gpflow
         import tensorflow as tf
@@ -1471,7 +1354,7 @@ class multihuxt_inputs:
             
             # Rescale all coordinates
             lat = np.interp(self.boundaryDistributions3D['t_grid'],
-                            self.availableBackgroundData['mjd'],
+                            self.solar_wind['mjd'],
                             self.ephemeris[at].lat_c.to(u.deg).value)
             x_lat = self._boundaryScalers['lat_grid'].transform(lat[:, None])
             
@@ -1577,7 +1460,7 @@ class multihuxt_inputs:
             
             # Rescale all coordinates
             lat = np.interp(self.boundaryDistributions3D['t_grid'],
-                            self.availableBackgroundData['mjd'],
+                            self.solar_wind['mjd'],
                             self.ephemeris[at].lat_c.to(u.deg).value)
             
             x_lat = lat[:, None]
@@ -1859,10 +1742,10 @@ class multihuxt_inputs:
         # Append the results, after interpolating to internal data index
         ordered_dict = {}
         for future, result in tqdm(as_completed(futures, with_results=True), total=len(futures)):
-            interp_result = pd.DataFrame(index=self.availableBackgroundData.index,
+            interp_result = pd.DataFrame(index=self.solar_wind.index,
                                          columns=result.columns)
             for col in interp_result.columns:
-                interp_result[col] = np.interp(self.availableBackgroundData['mjd'], result['mjd'], result[col])
+                interp_result[col] = np.interp(self.solar_wind['mjd'], result['mjd'], result[col])
                 
             ordered_dict[future.key] = interp_result
         
@@ -1939,10 +1822,10 @@ class multihuxt_inputs:
             future.drop(columns=['r', 'lon'], inplace=True)
             future.rename(columns={'U': 'U', 'BX': 'Br'}, inplace=True)
             
-            futureInterpolated = pd.DataFrame(index=self.availableBackgroundData.index,
+            futureInterpolated = pd.DataFrame(index=self.solar_wind.index,
                                               columns=future.columns)
             for col in futureInterpolated.columns:
-                futureInterpolated[col] = np.interp(self.availableBackgroundData['mjd'], future['mjd'], future[col])
+                futureInterpolated[col] = np.interp(self.solar_wind['mjd'], future['mjd'], future[col])
             
             return futureInterpolated
         
@@ -2081,6 +1964,36 @@ class multihuxt_inputs:
     # (that could be separated from this file with no loss of generalization 
     # or context)
     # =========================================================================
+    def _getChunksInTime(self, df, delta=90 * u.day):
+        
+        # We want each chunk to be as close to delta in length as possible
+        # And to overlap on each side by overlap
+        total_span = self.simstoptime - self.simstarttime
+        overlap = 10 * u.day
+        core_length = delta - 2 * overlap
+        approx_chunks = (total_span - overlap) / (core_length + overlap)
+        
+        n_chunks = int(np.floor(approx_chunks))
+        eff_core_length = ((total_span - overlap) - n_chunks*overlap)/n_chunks
+        eff_delta = eff_core_length + 2 * overlap
+        
+        dfs = []
+        for i in range(int(np.ceil(n_chunks))):
+            
+            # subsimstart = (self.simstarttime + i * eff_delta - (0 if i == 0 else 1) * overlap)
+            subsimstart = (self.simstarttime + i * eff_delta - i * overlap)
+            subsimstop = (subsimstart + eff_delta)
+            
+            dfs.append(df.query("@subsimstart.mjd <= mjd < @subsimstop.mjd"))    
+            
+        # Make sure the dfs cover the full range
+        if not (pd.concat(dfs).drop_duplicates().index == df.index).all():
+            print("Missing dataframe coverage!")
+            breakpoint()
+        
+        return dfs
+    
+    
     def _optimize_clustering(self, X, Y, target_noise_variance=0.01):
                              #target_reduction=None, target_noise=None, inX=None, inXY=None):
         from sklearn.cluster import MiniBatchKMeans
@@ -2266,420 +2179,3 @@ class CustomMeanFunction(gpflow.functions.MeanFunction):
         result = tf.numpy_function(self.interp, [X[:,1:]], tf.float64)[:,None]
         return result
 
-# %%
-
-import tensorflow as tf
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
-from sklearn.pipeline import Pipeline
-# from scipy.cluster.vq import kmeans
-from sklearn.cluster import KMeans
-import multiprocessing as mp
-from joblib import Parallel, delayed, wrap_non_picklable_objects
-class GPFlowEnsemble:
-    def __init__(self, kernel, X_list, Y_list, 
-                 Y_sigma_list=None, noise_variance=None, weight_scaling=20, SGPR=1, interpolate_mean=None):
-    
-        if SGPR==1:
-            self.type = 'GPR'
-        else:
-            self.type = 'SGPR'
-            self.inducing_point_fraction = SGPR
-    
-        # Given variables
-        self.kernel = kernel
-        self.X_list = X_list
-        self.Y_list = Y_list
-        self.sigma_list = Y_sigma_list
-        self.noise_variance = noise_variance
-        self.weight_scaling = weight_scaling
-        
-        if interpolate_mean is not None:
-            self.mean_function = CustomMeanFunction(*interpolate_mean)
-        else:
-            self.mean_function = None
-        
-        # Derived variables
-        self.nChunks = len(X_list)
-        self.model_list = []
-        self.optimize_models()
-    
-    
-    def optimize_models(self):
-        import gpflow
-        
-        print("Optimizing {} GP models".format(self.nChunks))
-        print("Current time: {}".format(datetime.datetime.now().strftime("%H:%M:%S")))
-        t0 = time.time()
-    
-        for i, (X, Y) in enumerate(zip(self.X_list, self.Y_list)):
-            print("Optimizing GP model #{} with {} points".format(i+1, len(X)))
-            t1 = time.time()
-            
-            # Copy kernel so the model is freshly solved each loop
-            kernel = copy.deepcopy(self.kernel)
-            # kernel = self.kernel
-            
-            if self.sigma_list is not None:
-                try:
-                    variance = self.sigma_list[i]**2
-                    variance[variance < 1e-5] = 1e-5 # Avoid <1e-6
-                    likelihood = gpflow.likelihoods.Gaussian(variance)
-                    gpflow.utilities.set_trainable(likelihood, False)
-                except:
-                    breakpoint()
-            else:
-                likelihood = None
-                
-            if self.type == 'GPR':
-                try:
-                    model = gpflow.models.GPR((X, Y),
-                                              kernel=kernel,
-                                              mean_function=self.mean_function,
-                                              noise_variance=self.noise_variance,
-                                              likelihood=likelihood
-                                              )
-                except:
-                    breakpoint()
-                    
-            elif self.type == 'SGPR':
-                # aim for 20 points
-                stepsize = int(np.round(1/self.inducing_point_fraction))
-                print("Step size for SGPR: {}".format(stepsize))
-                model = gpflow.models.SGPR((X, Y),
-                                           kernel=kernel,
-                                           # noise_variance=self.noise_variance,
-                                           inducing_variable=X[::stepsize,:],
-                                           likelihood=likelihood
-                                           )
-            else:
-                breakpoint()
-            
-            try:
-                opt = gpflow.optimizers.Scipy()
-                opt.minimize(model.training_loss, model.trainable_variables)
-            except:
-                breakpoint()
-            
-            self.model_list.append(model)
-            
-            if i == 0: first_kernel_iter = copy.deepcopy(self.kernel)
-            
-            print("Completed in {:.1f} s".format(time.time() - t1))
-            
-        print("All GP models optimized in {:.1f} s".format(time.time() - t0))
-        return
-        
-    #     weights = self.calculate_weights(X_new)
-        
-    #     result_mu = np.full((len(X_new), 1), 0, dtype='float64')
-    #     result_sigma2 = np.full((len(X_new), 1), 0, dtype='float64')
-    #     for w, model in zip(weights, self.model_list):
-    #         f_mu, f_sigma2 = model.predict_f(X_new)
-            
-    #         result_mu += w[:,None] * f_mu.numpy()
-    #         result_sigma2 += w[:,None] * f_sigma2.numpy()
-            
-    #     return result_mu, result_sigma2
-    
-    def predict_f(self, X_new, chunk_size=None, cpu_fraction=None):
-        """
-        Predict the values of f, the underlying function of GP regression, 
-        without measurement errors.
-        If chunksize is supplied, do the prediction in parallel.
-
-        Parameters
-        ----------
-        X_new : TYPE
-            DESCRIPTION.
-        nCores : TYPE, optional
-            DESCRIPTION. The default is None.
-        chunksize : TYPE, optional
-            DESCRIPTION. The default is None.
-
-        Returns
-        -------
-        TYPE
-            DESCRIPTION.
-        TYPE
-            DESCRIPTION.
-
-        """
-        if chunk_size is None:
-            chunk_size = len(X_new)
-        if cpu_fraction is None:
-            cpu_fraction = 0.50
-        
-        n_jobs = int(cpu_fraction * mp.cpu_count())
-        
-        X_new_chunked = [X_new[pos:pos + chunk_size] for pos in range(0, len(X_new), chunk_size)]
-        
-        # @wrap_non_picklable_objects
-        def _predict_f(GPFlowEnsemble, _X):
-            weights = GPFlowEnsemble.calculate_weights(_X)
-            result_mu = np.full((len(_X), 1), 0, dtype='float64')
-            result_sigma2 = np.full((len(_X), 1), 0, dtype='float64')
-            for w, model in zip(weights, GPFlowEnsemble.model_list):
-                f_mu, f_sigma2 = model.predict_f(_X)
-                
-                result_mu += w[:,None] * f_mu.numpy()
-                result_sigma2 += w[:,None] * f_sigma2.numpy()
-                
-            return result_mu, result_sigma2
-        
-        # Avoid the parallelization overhead if chunk_size == len(X_new)
-        if len(X_new_chunked) > 1:
-            generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-                delayed(_predict_f)(self, X_chunk) for X_chunk in X_new_chunked)
-        
-            results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
-        else:
-            results = [_predict_f(self, X_new)]
-        
-        results_mu = np.vstack([r[0] for r in results])
-        results_sigma2 = np.vstack([r[1] for r in results])
-        
-        return results_mu, results_sigma2
-    
-    # def predict_f_samples(self, X_new, num_samples=1):
-        
-    #     weights = self.calculate_weights(X_new)
-        
-    #     result = np.full((num_samples, len(X_new), 1), 0, dtype='float64')
-    #     for w, model in zip(weights, self.model_list):
-    #         f_samples = model.predict_f_samples(X_new, num_samples)
-            
-    #         result += np.tile(w[:,None], (num_samples, 1, 1)) * f_samples.numpy()
-        
-    #     return result
-    
-    def predict_f_samples(self, X_new, num_samples=1, chunk_size=None, cpu_fraction=None):
-        """
-        Predict the values of f, the underlying function of GP regression, 
-        without measurement errors.
-        If chunksize is supplied, do the prediction in parallel.
-
-        Parameters
-        ----------
-        X_new : TYPE
-            DESCRIPTION.
-        nCores : TYPE, optional
-            DESCRIPTION. The default is None.
-        chunksize : TYPE, optional
-            DESCRIPTION. The default is None.
-
-        Returns
-        -------
-        TYPE
-            DESCRIPTION.
-        TYPE
-            DESCRIPTION.
-
-        """
-        if chunk_size is None:
-            chunk_size = len(X_new)
-        if cpu_fraction is None:
-            cpu_fraction = 0.50
-        
-        n_jobs = int(cpu_fraction * mp.cpu_count())
-        
-        X_new_chunked = [X_new[pos:pos + chunk_size] for pos in range(0, len(X_new), chunk_size)]
-        
-        def _predict_f_samples(GPFlowEnsemble, _X):
-            weights = GPFlowEnsemble.calculate_weights(_X)
-            result = np.full((num_samples, len(_X), 1), 0, dtype='float64')
-            for w, model in zip(weights, GPFlowEnsemble.model_list):
-                f_samples = model.predict_f_samples(_X, num_samples)
-                result += np.tile(w[:,None], (num_samples, 1, 1)) * f_samples.numpy()
-                
-            return result
-        
-        # Avoid the parallelization overhead if chunk_size == len(X_new)
-        if len(X_new_chunked) > 1:
-            generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-                delayed(_predict_f_samples)(self, X_chunk) for X_chunk in X_new_chunked)
-        
-            results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
-        else:
-            results = [_predict_f_samples(self, X_new)]
-        
-        results = np.concatenate(results, axis=1)
-        
-        return results
-    
-    # def predict_y(self, X_new):
-        
-    #     weights = self.calculate_weights(X_new)
-        
-    #     result_mu = np.full((len(X_new), 1), 0, dtype='float64')
-    #     result_sigma2 = np.full((len(X_new), 1), 0, dtype='float64')
-    #     for w, model in zip(weights, self.model_list):
-    #         y_mu, y_sigma2 = model.predict_y(X_new)
-            
-    #         result_mu += w[:,None] * y_mu.numpy()
-    #         result_sigma2 += w[:,None] * y_sigma2.numpy()
-            
-    #     return result_mu, result_sigma2
-    
-    def predict_y(self, X_new, chunk_size=None, cpu_fraction=None):
-        if chunk_size is None:
-            chunk_size = len(X_new)
-        if cpu_fraction is None:
-            cpu_fraction = 0.50
-        
-        n_jobs = int(cpu_fraction * mp.cpu_count())
-        
-        X_new_chunked = [X_new[pos:pos + chunk_size] for pos in range(0, len(X_new), chunk_size)]
-        
-        def _predict_y(GPFlowEnsemble, _X):
-            weights = GPFlowEnsemble.calculate_weights(_X)
-            result_mu = np.full((len(_X), 1), 0, dtype='float64')
-            result_sigma2 = np.full((len(_X), 1), 0, dtype='float64')
-            for w, model in zip(weights, GPFlowEnsemble.model_list):
-                y_mu, y_sigma2 = model.predict_y(_X)
-                
-                result_mu += w[:,None] * y_mu.numpy()
-                result_sigma2 += w[:,None] * y_sigma2.numpy()
-                
-            return result_mu, result_sigma2
-        
-        # Avoid the parallelization overhead if chunk_size == len(X_new)
-        if len(X_new_chunked) > 1:
-            generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-                delayed(_predict_y)(self, X_chunk) for X_chunk in X_new_chunked)
-        
-            results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
-        else:
-            results = [_predict_y(self, X_new)]
-        
-        results_mu = np.vstack([r[0] for r in results])
-        results_sigma2 = np.vstack([r[1] for r in results])
-
-        return results_mu, results_sigma2
-    
-    def calculate_weights(self, X_new):
-        import scipy
-        from scipy.spatial.distance import cdist
-        
-        # X_centers = [np.mean(X, axis=0) for X in self.X_list]
-        
-        # # Distances are n_chunks by n_X_new
-        # distances = [np.linalg.norm(X_new - X_center, axis=1) for X_center in X_centers]
-        # distances = np.stack(distances) 
-        
-        # weights = scipy.special.softmax(-distances, axis=0)
-        
-        min_distances = []
-        for model in self.model_list:
-            # Get only the X dimensions of the model data
-            data = model.data[0]
-            
-            dist_matrix = cdist(data, X_new)
-            min_dists = np.min(dist_matrix, axis=0)
-            
-            min_distances.append(min_dists)
-            
-        min_distances = np.array(min_distances)
-        
-        # Normalize min_distances to the distance expected after 
-        norm_min_distances = min_distances / (1/len(self.X_list))
-        norm_min_distances[norm_min_distances > 1] = 1
-        
-        weights = scipy.special.softmax(self.weight_scaling*(1-norm_min_distances), axis=0)
-        
-        return weights
-    
-    def print_summary(self):
-        import gpflow
-        for model in self.model_list:
-            gpflow.utilities.print_summary(model, 'simple')
-            
-        df = pd.DataFrame()
-        for i, model in enumerate(self.model_list):
-            d = gpflow.utilities.parameter_dict(model)
-            
-            for key, value in d.items():
-                df.loc[i, key] = value.numpy()
-            
-        return df
-
-
-# def _process_sample(df_sample, method_sample):
-#     sf_sample_copy = df_sample.copy(deep=True)
-#     insitu_df_copy['V'] = U_sample
-#     return map_vBoundaryInwards(source, insitu_df_copy, method_sample)
-
-# # %%
-# if __name__ == '__main__':
-#     import generate_external_input
-#     # =========================================================================
-#     # THIS SHOULD ALL BE MOVED TO A NOTEBOOK WHEN WORKING!
-#     # =========================================================================
-    
-#     # ========================================================================
-#     # Initialize an MSIR inputs object
-#     # =========================================================================
-#     start = datetime.datetime(2012, 1, 1)
-#     stop = datetime.datetime(2012, 7, 1)
-#     rmax = 10 # AU
-#     latmax = 15
-    
-#     inputs = multihuxt_inputs(start, stop, rmax=rmax, latmax=latmax)
-#     # =============================================================================
-#     # Search for available background SW and transient data
-#     # =============================================================================
-#     inputs.get_availableBackgroundData()
-#     inputs.filter_availableBackgroundData()
-#     # inputs.sort_availableSources('rad_HGI')
-    
-#     # Get ICME/IPS data for all available source
-#     inputs.get_availableTransientData()
-    
-#     # =============================================================================
-#     # Generate background and boundary distributions:
-#     #   - Remove ICMEs
-#     #   - GP interpolate 1D in-situ time series
-#     #   - Backmap to 21.5 RS
-#     #   - GP interpolate 3D (time, lon, lat) source model
-#     # =============================================================================
-    
-#     # Generate an input CME distribution
-#     inputs.generate_cmeDistribution()
-    
-#     inputs.generate_backgroundDistributions()
-    
-#     inputs.generate_boundaryDistributions(nSamples=16, constant_sig=0)
-    
-#     # Either choose one boundary distribution, or do a 3D GP interpolation
-#     # inputs.generate_boundaryDistribution3D(nLat=32, extend='omni', GP=False)
-#     inputs.generate_boundaryDistribution3D(nLat=32, GP=True)
-    
-
-    
-#     breakpoint()
-
-#     # Add Saturn SKR Data
-#     saturn_df = generate_external_input.Cassini_SKR(inputs.availableBackgroundData.index)
-#     inputs.availableBackgroundData = pd.merge(inputs.availableBackgroundData, 
-#                                               saturn_df,
-#                                               left_index=True, right_index=True)
-    
-#     nSamples = 16
-#     weights = [1/nSamples]*nSamples
-    
-#     # for source in ...
-#     source = 'saturn'
-    
-#     boundarySamples, cmeSamples = inputs.sample3D(weights, at=source)
-    
-#     ensemble = inputs.predict2(boundarySamples, cmeSamples, source)
-    
-#     # Save as checkpoint
-#     with open('/Users/mrutala/projects/OHTransients/inputs_checkpoint.pkl', 'wb') as f:
-#         pickle.dump(inputs, f)
-         
-#     with open('/Users/mrutala/projects/OHTransients/inputs_checkpoint.pkl', 'rb') as f:
-#         inputs = pickle.load(f)
-    
-#     # CIME interaction time @ Saturn (Palmerio+ 2021)
-#     interaction_time = datetime.datetime(2012, 6, 12, 00, 00)
-    
