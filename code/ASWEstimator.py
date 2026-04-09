@@ -15,7 +15,7 @@ import pandas as pd
 import tqdm
 import copy
 import tensorflow as tf
-
+import pickle
 import tensorflow_probability  as     tfp
 
 import sys
@@ -24,7 +24,7 @@ sys.path.append('/Users/mrutala/projects/ASWEstimator/code/')
 import huxt as H
 import huxt_analysis as HA
 import huxt_inputs as Hin
-import huxt_atObserver as hao
+# import huxt_atObserver as hao
 import multihuxt_readers as mr
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
 
@@ -55,7 +55,7 @@ Overview:
     
 # %%
 
-class multihuxt_inputs:
+class ASWEstimator:
     def __init__(self, start, stop, 
                  rmax=1, latmax=10):
         self.start = start
@@ -97,6 +97,15 @@ class multihuxt_inputs:
     # ----------------------------------------------------------------------
     def copy(self):
         return copy.deepcopy(self)
+    
+    def save(self, filename):
+        with open(filename, 'wb') as f:
+            pickle.dump(self, f)
+    
+    @classmethod
+    def load(self, filename):
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
     
     # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     # Ease-of-use time properties
@@ -357,11 +366,11 @@ class multihuxt_inputs:
     #     
     # =============================================================================
     def makeBackgroundDistribution(self,
-                                         inducing_variable=True,
-                                         GP = False, interpolate = False,
-                                         target_noise = 1e-2,
-                                         max_chunk_length = 1024,
-                                         n_samples = 1):
+                                   # inducing_variable=True,
+                                   GP = False, interpolate = False,
+                                   # target_noise = 1e-2,
+                                   # max_chunk_length = 1024,
+                                   n_samples = 1):
         target_variables = ['U']
         
         # summary holds summary statistics (mean, standard deviation)
@@ -389,11 +398,7 @@ class multihuxt_inputs:
                 carrington_period = self.get_carringtonPeriod(self.ephemeris[source].r.mean())
                 
                 summary, models = self._imputeBackgroundDistribution(
-                    insitu_df, 
-                    carrington_period,
-                    target_variables=target_variables, 
-                    target_noise=target_noise,
-                    max_chunk_length=max_chunk_length)
+                    insitu_df, carrington_period, target_variables=target_variables)
                 
                 # all_scalers.update({source: scalers})
                 all_models.update({source: models})
@@ -402,9 +407,7 @@ class multihuxt_inputs:
                 # self._backgroundDistributionMethod = 'extend'
                 
                 summary = self._extendBackgroundDistributions(
-                    insitu_df,
-                    target_variables=target_variables,
-                    n_samples=n_samples)
+                    insitu_df, target_variables=target_variables)
                 
                 all_scalers.update({})
                 all_models.update({})
@@ -471,9 +474,10 @@ class multihuxt_inputs:
         return         
     
     def _extendBackgroundDistributions(self, input_df,
-                                        target_variables = ['U', 'Br'],
-                                        noise_constant = 0.0,
-                                        n_samples = 0):
+                                        target_variables = ['U'],
+                                        # noise_constant = 0.0,
+                                        # n_samples = 0
+                                        ):
         
         
         # Use df, which already has NaNs where ICMEs are present
@@ -502,8 +506,8 @@ class multihuxt_inputs:
     
     def _imputeBackgroundDistribution(self, df, carrington_period,
                                         target_variables = ['U'],
-                                        target_noise = 1e-2,
-                                        max_chunk_length = 1024
+                                        #target_noise = 1e-2,
+                                        #max_chunk_length = 1024
                                         ):
         
         # Physically motivated data chunking
@@ -621,48 +625,6 @@ class multihuxt_inputs:
         
         return bgDistribution_full_df, bgGPModels
     
-    # def ambient_solar_wind_LI(self, df, target_variables=['U']):
-        
-        
-    #     new_insitu = df.copy(deep=True)
-    #     new_insitu.drop(columns='U', inplace=True)
-        
-    #     # Set up dictionaries 
-    #     gp_variables = {k: {} for k in target_variables}
-        
-    #     for target_var in target_variables: # ['U', 'Br']:
-            
-    #         new_insitu[target_var+'_mu'] = df[target_var].interpolate(limit_direction=None)
-    #         new_insitu[target_var+'_sig'] = new_insitu[target_var+'_mu'].rolling('1d').std()
-            
-    #         new_var_mu = df[target_var].interpolate(limit_direction=None)
-    #         new_var_sig = new_var_mu.rolling('1d').std()
-    #         new_var_cov = np.full((len(new_var_mu), len(new_var_mu)), np.nan)
-            
-    #         new_var_mu = new_var_mu.to_numpy()
-    #         new_var_sig = new_var_sig.to_numpy()
-
-    #         # # Replace non-ICME regions with real data
-    #         # noNaN_bool = ~df[var_str].isna()
-    #         # new_insitu.loc[noNaN_bool, 'U_mu'] = df.loc[noNaN_bool, 'U']
-    #         # new_insitu.loc[noNaN_bool, 'U_sig'] *= 1/10.
-            
-    #         # # # Save a function to generate samples of f with full covariance
-    #         # def func(mjd, num_samples):
-    #         #     fo_samples = []
-    #         #     for _ in range(num_samples):
-    #         #         sample = new_insitu.query("@mjd[0] <= mjd <= @mjd[-1]")[var_str+'_mu']
-    #         #         fo_samples.append(sample)
-    #         #     fo_samples = np.array(fo_samples)
-    #         #     return fo_samples
-            
-    #         # Assign to dict
-    #         gp_variables[target_var]['mean'] = new_var_mu
-    #         gp_variables[target_var]['std'] = new_var_sig
-    #         gp_variables[target_var]['cov'] = new_var_cov
-            
-    #     return gp_variables
-        
     def generate_boundaryDistributions(self, constant_percent_error=0.0):
         from tqdm import tqdm
         # from dask.distributed import Client, as_completed, LocalCluster
