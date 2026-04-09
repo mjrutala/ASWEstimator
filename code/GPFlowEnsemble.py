@@ -10,7 +10,7 @@ import numpy as np
 import datetime as dt
 import time
 import copy
-import tqdm
+from tqdm.autonotebook import tqdm
 import pandas as pd
 import tensorflow as tf
 
@@ -59,11 +59,11 @@ class EnsembleGPR:
         
         n_GPs = len(self.X_list)
 
-        for X, Y, k in tqdm.tqdm(zip(self.X_list, self.Y_list, self.k_list), desc='Optimizing {} GP Models'.format(n_GPs), total=n_GPs):
+        for X, Y, k in tqdm(zip(self.X_list, self.Y_list, self.k_list), desc='Optimizing {} GP Models'.format(n_GPs), total=n_GPs):
             # print("Optimizing GP model #{} with {} points".format(i+1, len(X)))
             # t1 = time.time()
             
-            pbar = tqdm.tqdm(desc='Optimizing Model', leave=False)
+            pbar = tqdm(desc='Optimizing Model', leave=False)
             def tqdm_callback(j):
                 pbar.update(1)
             
@@ -180,7 +180,7 @@ class EnsembleGPR:
             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
                 delayed(_predict_f)(self, X_chunk) for X_chunk in X_chunked)
         
-            results = list(tqdm.tqdm(generator, total=len(X_chunked), desc="Predicting f(X)"))
+            results = list(tqdm(generator, total=len(X_chunked), desc="Predicting f(X)"))
         else:
             results = [_predict_f(self, X_chunked)]
         
@@ -256,7 +256,7 @@ class EnsembleGPR:
             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
                 delayed(_predict_f)(self, X_chunk) for X_chunk in X_chunked)
         
-            results = list(tqdm.tqdm(generator, total=len(X_chunked), desc="Sampling f(X)"))
+            results = list(tqdm(generator, total=len(X_chunked), desc="Sampling f(X)"))
         else:
             results = [_predict_f(self, X_chunked)]
         
@@ -333,7 +333,7 @@ class EnsembleGPR:
     #         generator = Parallel(return_as='generator', n_jobs=n_jobs)(
     #             delayed(_predict_f_samples)(self, X_chunk) for X_chunk in X_new_chunked)
         
-    #         results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
+    #         results = list(tqdm(generator, total=len(X_new_chunked)))
     #     else:
     #         results = [_predict_f_samples(self, X_new_chunked)]
         
@@ -480,7 +480,7 @@ class EnsembleGPR:
 #             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
 #                 delayed(_predict_f)(self, X_chunk) for X_chunk in X_new_chunked)
         
-#             results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
+#             results = list(tqdm(generator, total=len(X_new_chunked)))
 #         else:
 #             results = [_predict_f(self, X_new_chunked)]
         
@@ -573,7 +573,7 @@ class EnsembleGPR:
 #             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
 #                 delayed(_predict_f_samples)(self, X_chunk) for X_chunk in X_new_chunked)
         
-#             results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
+#             results = list(tqdm(generator, total=len(X_new_chunked)))
 #         else:
 #             results = [_predict_f_samples(self, X_new_chunked)]
         
@@ -620,7 +620,7 @@ class EnsembleGPR:
 #     #         generator = Parallel(return_as='generator', n_jobs=n_jobs)(
 #     #             delayed(_predict_f_samples)(self, X_chunk) for X_chunk in X_new_chunked)
         
-#     #         results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
+#     #         results = list(tqdm(generator, total=len(X_new_chunked)))
 #     #     else:
 #     #         results = [_predict_f_samples(self, X_new)]
         
@@ -669,7 +669,7 @@ class EnsembleGPR:
 #     #         generator = Parallel(return_as='generator', n_jobs=n_jobs)(
 #     #             delayed(_predict_y)(self, X_chunk) for X_chunk in X_new_chunked)
         
-#     #         results = list(tqdm.tqdm(generator, total=len(X_new_chunked)))
+#     #         results = list(tqdm(generator, total=len(X_new_chunked)))
 #     #     else:
 #     #         results = [_predict_y(self, X_new)]
         
