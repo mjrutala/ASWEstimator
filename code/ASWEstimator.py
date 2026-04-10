@@ -22,7 +22,7 @@ import sys
 sys.path.append('/Users/mrutala/projects/HUXt/code/')
 sys.path.append('/Users/mrutala/projects/ASWEstimator/code/')
 import huxt as H
-import huxt_analysis as HA
+# import huxt_analysis as HA
 import huxt_inputs as Hin
 # import huxt_atObserver as hao
 import multihuxt_readers as mr
@@ -1652,179 +1652,179 @@ class ASWEstimator:
         
         return boundarySamples_U, cmeSamples
     
-    def predict_withDask(self, boundarySamples_U, cmeSamples, observer_name, dpadding=0.03):
-        import multiprocessing as mp
-        from tqdm import tqdm
-        from dask.distributed import Client, wait, progress, as_completed
-        import logging
-        logging.disable(logging.INFO)
-        # dask.config.set({'logging.distributed': 'error'})
-        # dask.config.set({'logging.futures': 'error'})
+    # def predict_withDask(self, boundarySamples_U, cmeSamples, observer_name, dpadding=0.03):
+    #     import multiprocessing as mp
+    #     from tqdm import tqdm
+    #     from dask.distributed import Client, wait, progress, as_completed
+    #     import logging
+    #     logging.disable(logging.INFO)
+    #     # dask.config.set({'logging.distributed': 'error'})
+    #     # dask.config.set({'logging.futures': 'error'})
         
-        # DO NOT loop over this bit
-        observer = H.Observer(observer_name, Time(self.boundaryDistribution['t_grid'], format='mjd'))
+    #     # DO NOT loop over this bit
+    #     observer = H.Observer(observer_name, Time(self.boundaryDistribution['t_grid'], format='mjd'))
         
-        n_cores = int(0.75 * mp.cpu_count()) 
-        client = Client(n_workers = n_cores,
-                        threads_per_worker = 1,
-                        silence_logs = 40)
+    #     n_cores = int(0.75 * mp.cpu_count()) 
+    #     client = Client(n_workers = n_cores,
+    #                     threads_per_worker = 1,
+    #                     silence_logs = 40)
         
-        futures = []
-        for boundarySample_U, cmeSample in zip(boundarySamples_U, cmeSamples):
-        # for i in range(self.nSamples):
-            # DO loop over these bits
-            cme_list = []
-            for index, row in cmeSample.iterrows():
+    #     futures = []
+    #     for boundarySample_U, cmeSample in zip(boundarySamples_U, cmeSamples):
+    #     # for i in range(self.nSamples):
+    #         # DO loop over these bits
+    #         cme_list = []
+    #         for index, row in cmeSample.iterrows():
                 
-                cme = H.ConeCME(t_launch=row['t']*u.s, 
-                                longitude=row['lon']*u.deg, 
-                                latitude=row['lat']*u.deg, 
-                                width=row['width']*u.deg, 
-                                v=row['speed']*(u.km/u.s), 
-                                thickness=row['thickness']*u.solRad, 
-                                initial_height=row['innerbound']*u.solRad,
-                                cme_expansion=False,
-                                cme_fixed_duration=True)
+    #             cme = H.ConeCME(t_launch=row['t']*u.s, 
+    #                             longitude=row['lon']*u.deg, 
+    #                             latitude=row['lat']*u.deg, 
+    #                             width=row['width']*u.deg, 
+    #                             v=row['speed']*(u.km/u.s), 
+    #                             thickness=row['thickness']*u.solRad, 
+    #                             initial_height=row['innerbound']*u.solRad,
+    #                             cme_expansion=False,
+    #                             cme_fixed_duration=True)
                 
-                cme_list.append(cme)
+    #             cme_list.append(cme)
             
-            future = client.submit(hao.huxt_atObserver, self.simstart, self.simstop,
-                                   self.boundaryDistribution['t_grid'], 
-                                   boundarySample_U,
-                                   self.boundaryDistribution['B_grid'], 
-                                   observer_name, observer,
-                                   dpadding = dpadding, 
-                                   cme_list = cme_list,
-                                   r_min=self.innerbound)
+    #         future = client.submit(hao.huxt_atObserver, self.simstart, self.simstop,
+    #                                self.boundaryDistribution['t_grid'], 
+    #                                boundarySample_U,
+    #                                self.boundaryDistribution['B_grid'], 
+    #                                observer_name, observer,
+    #                                dpadding = dpadding, 
+    #                                cme_list = cme_list,
+    #                                r_min=self.innerbound)
             
-            futures.append(future)
+    #         futures.append(future)
             
-        t0 = time.time()
+    #     t0 = time.time()
         
-        # Append the results, after interpolating to internal data index
-        ordered_dict = {}
-        for future, result in tqdm(as_completed(futures, with_results=True), total=len(futures)):
-            interp_result = pd.DataFrame(index=self.solar_wind.index,
-                                         columns=result.columns)
-            for col in interp_result.columns:
-                interp_result[col] = np.interp(self.solar_wind['mjd'], result['mjd'], result[col])
+    #     # Append the results, after interpolating to internal data index
+    #     ordered_dict = {}
+    #     for future, result in tqdm(as_completed(futures, with_results=True), total=len(futures)):
+    #         interp_result = pd.DataFrame(index=self.solar_wind.index,
+    #                                      columns=result.columns)
+    #         for col in interp_result.columns:
+    #             interp_result[col] = np.interp(self.solar_wind['mjd'], result['mjd'], result[col])
                 
-            ordered_dict[future.key] = interp_result
+    #         ordered_dict[future.key] = interp_result
         
-        # Now reorder them based on the original futures order
-        ensemble = [ordered_dict[future.key] for future in futures]
-        del futures
+    #     # Now reorder them based on the original futures order
+    #     ensemble = [ordered_dict[future.key] for future in futures]
+    #     del futures
         
-        print("{} HUXt forecasts completed in {}s".format(len(ensemble), time.time()-t0))
+    #     print("{} HUXt forecasts completed in {}s".format(len(ensemble), time.time()-t0))
         
-        # =============================================================================
-        # Visualize    
-        # =============================================================================
-        fig, ax = plt.subplots(figsize=(6,4.5))
+    #     # =============================================================================
+    #     # Visualize    
+    #     # =============================================================================
+    #     fig, ax = plt.subplots(figsize=(6,4.5))
         
-        for member in ensemble:
-            ax.plot(member['mjd'], member['U'], color='C3', lw=1, alpha=0.2)
-        ax.plot(member['mjd'][0:1], member['U'][0:1], lw=1, color='C3', alpha=1, 
-                label = 'Ensemble Members')
+    #     for member in ensemble:
+    #         ax.plot(member['mjd'], member['U'], color='C3', lw=1, alpha=0.2)
+    #     ax.plot(member['mjd'][0:1], member['U'][0:1], lw=1, color='C3', alpha=1, 
+    #             label = 'Ensemble Members')
         
         
-        ax.legend(scatterpoints=3, loc='upper right')
+    #     ax.legend(scatterpoints=3, loc='upper right')
         
-        ax.set(xlim=[self.starttime.mjd, self.stoptime.mjd])
-        ax.set(xlabel='Date [MJD], from {}'.format(datetime.datetime.strftime(self.start, '%Y-%m-%d %H:%M')), 
-               ylabel='Solar Wind Speed [km/s]', 
-               title='HUXt Ensemble @ {}'.format(observer_name))
+    #     ax.set(xlim=[self.starttime.mjd, self.stoptime.mjd])
+    #     ax.set(xlabel='Date [MJD], from {}'.format(datetime.datetime.strftime(self.start, '%Y-%m-%d %H:%M')), 
+    #            ylabel='Solar Wind Speed [km/s]', 
+    #            title='HUXt Ensemble @ {}'.format(observer_name))
         
-        plt.show()
+    #     plt.show()
             
             
-        return ensemble
+    #     return ensemble
     
-    def predict(self, boundarySamples_U, cmeSamples, observer_name, dpadding=0.03):
-        import multiprocessing as mp
-        from tqdm import tqdm
-        from joblib import Parallel, delayed
+    # def predict(self, boundarySamples_U, cmeSamples, observer_name, dpadding=0.03):
+    #     import multiprocessing as mp
+    #     from tqdm import tqdm
+    #     from joblib import Parallel, delayed
         
-        t0 = time.time()
-        nSamples = len(boundarySamples_U)
+    #     t0 = time.time()
+    #     nSamples = len(boundarySamples_U)
         
-        # DO NOT loop over this bit
-        observer = H.Observer(observer_name, Time(self.boundaryDistributions3D['t_grid'], format='mjd'))
+    #     # DO NOT loop over this bit
+    #     observer = H.Observer(observer_name, Time(self.boundaryDistributions3D['t_grid'], format='mjd'))
         
-        nCores = int(0.75 * mp.cpu_count()) 
+    #     nCores = int(0.75 * mp.cpu_count()) 
         
-        # Calculate boundary distributions by backmapping each sample
-        def runHUXt(boundarySample_U, cmeSample):
+    #     # Calculate boundary distributions by backmapping each sample
+    #     def runHUXt(boundarySample_U, cmeSample):
             
-            cme_list = []
-            for index, row in cmeSample.iterrows():
+    #         cme_list = []
+    #         for index, row in cmeSample.iterrows():
                 
-                cme = H.ConeCME(t_launch=row['t']*u.s, 
-                                longitude=row['lon']*u.deg, 
-                                latitude=row['lat']*u.deg, 
-                                width=row['width']*u.deg, 
-                                v=row['speed']*(u.km/u.s), 
-                                thickness=row['thickness']*u.solRad, 
-                                initial_height=row['innerbound']*u.solRad,
-                                cme_expansion=False,
-                                cme_fixed_duration=True)
+    #             cme = H.ConeCME(t_launch=row['t']*u.s, 
+    #                             longitude=row['lon']*u.deg, 
+    #                             latitude=row['lat']*u.deg, 
+    #                             width=row['width']*u.deg, 
+    #                             v=row['speed']*(u.km/u.s), 
+    #                             thickness=row['thickness']*u.solRad, 
+    #                             initial_height=row['innerbound']*u.solRad,
+    #                             cme_expansion=False,
+    #                             cme_fixed_duration=True)
                 
-                cme_list.append(cme)
+    #             cme_list.append(cme)
                 
-            future = hao.huxt_atObserver(self.simstart, self.simstop,
-                                         self.boundaryDistributions3D['t_grid'], 
-                                         boundarySample_U,
-                                         self.boundaryDistributions3D['B_grid'][0,:,:], 
-                                         observer_name, observer,
-                                         dpadding = dpadding, 
-                                         cme_list = cme_list,
-                                         r_min=self.innerbound)
+    #         future = hao.huxt_atObserver(self.simstart, self.simstop,
+    #                                      self.boundaryDistributions3D['t_grid'], 
+    #                                      boundarySample_U,
+    #                                      self.boundaryDistributions3D['B_grid'][0,:,:], 
+    #                                      observer_name, observer,
+    #                                      dpadding = dpadding, 
+    #                                      cme_list = cme_list,
+    #                                      r_min=self.innerbound)
             
-            # Do a bit of reformatting
-            future.drop(columns=['r', 'lon'], inplace=True)
-            future.rename(columns={'U': 'U', 'BX': 'Br'}, inplace=True)
+    #         # Do a bit of reformatting
+    #         future.drop(columns=['r', 'lon'], inplace=True)
+    #         future.rename(columns={'U': 'U', 'BX': 'Br'}, inplace=True)
             
-            futureInterpolated = pd.DataFrame(index=self.solar_wind.index,
-                                              columns=future.columns)
-            for col in futureInterpolated.columns:
-                futureInterpolated[col] = np.interp(self.solar_wind['mjd'], future['mjd'], future[col])
+    #         futureInterpolated = pd.DataFrame(index=self.solar_wind.index,
+    #                                           columns=future.columns)
+    #         for col in futureInterpolated.columns:
+    #             futureInterpolated[col] = np.interp(self.solar_wind['mjd'], future['mjd'], future[col])
             
-            return futureInterpolated
+    #         return futureInterpolated
         
-        futureGenerator = Parallel(return_as='generator', n_jobs=nCores)(
-            delayed(runHUXt)(boundarySample_U, cmeSample) 
-            for boundarySample_U, cmeSample in zip(boundarySamples_U, cmeSamples)
-            )
+    #     futureGenerator = Parallel(return_as='generator', n_jobs=nCores)(
+    #         delayed(runHUXt)(boundarySample_U, cmeSample) 
+    #         for boundarySample_U, cmeSample in zip(boundarySamples_U, cmeSamples)
+    #         )
         
-        ensemble = list(tqdm(futureGenerator, total=nSamples))
-        # !!!! ditch ephemeris info in these files
+    #     ensemble = list(tqdm(futureGenerator, total=nSamples))
+    #     # !!!! ditch ephemeris info in these files
         
-        print("{} HUXt forecasts completed in {}s".format(len(ensemble), time.time()-t0))
+    #     print("{} HUXt forecasts completed in {}s".format(len(ensemble), time.time()-t0))
         
-        # =============================================================================
-        # Visualize    
-        # =============================================================================
-        # fig, ax = plt.subplots(figsize=(6,4.5))
+    #     # =============================================================================
+    #     # Visualize    
+    #     # =============================================================================
+    #     # fig, ax = plt.subplots(figsize=(6,4.5))
         
-        # for member in ensemble:
-        #     ax.plot(member['mjd'], member['U'], color='C3', lw=1, alpha=0.2)
-        # ax.plot(member['mjd'][0:1], member['U'][0:1], lw=1, color='C3', alpha=1, 
-        #         label = 'Ensemble Members')
+    #     # for member in ensemble:
+    #     #     ax.plot(member['mjd'], member['U'], color='C3', lw=1, alpha=0.2)
+    #     # ax.plot(member['mjd'][0:1], member['U'][0:1], lw=1, color='C3', alpha=1, 
+    #     #         label = 'Ensemble Members')
         
         
-        # ax.legend(scatterpoints=3, loc='upper right')
+    #     # ax.legend(scatterpoints=3, loc='upper right')
         
-        # ax.set(xlim=[self.starttime.mjd, self.stoptime.mjd])
-        # ax.set(xlabel='Date [MJD], from {}'.format(datetime.datetime.strftime(self.start, '%Y-%m-%d %H:%M')), 
-        #        ylabel='Solar Wind Speed [km/s]', 
-        #        title='HUXt Ensemble @ {}'.format(observer_name))
+    #     # ax.set(xlim=[self.starttime.mjd, self.stoptime.mjd])
+    #     # ax.set(xlabel='Date [MJD], from {}'.format(datetime.datetime.strftime(self.start, '%Y-%m-%d %H:%M')), 
+    #     #        ylabel='Solar Wind Speed [km/s]', 
+    #     #        title='HUXt Ensemble @ {}'.format(observer_name))
         
-        # plt.show()
+    #     # plt.show()
         
-        # Save ensemble
-        self.current_ensemble = ensemble
+    #     # Save ensemble
+    #     self.current_ensemble = ensemble
         
-        return ensemble
+    #     return ensemble
     
     def estimate(self, ensemble, weights, columns=None): # in loop
         """
