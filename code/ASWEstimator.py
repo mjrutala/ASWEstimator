@@ -9,25 +9,21 @@ import astropy.units as u
 from astropy.time import Time
 import datetime
 import numpy as np
-import time
+# import time
 import matplotlib.pyplot as plt
 import pandas as pd
-import tqdm
+# import tqdm
 import copy
 import tensorflow as tf
 import pickle
 import tensorflow_probability  as     tfp
 
 import sys
-sys.path.append('/Users/mrutala/projects/HUXt/code/')
-sys.path.append('/Users/mrutala/projects/ASWEstimator/code/')
-import huxt as H
-# import huxt_analysis as HA
-import huxt_inputs as Hin
-# import huxt_atObserver as hao
-import multihuxt_readers as mr
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
-
+path = '/Users/mrutala/projects/ASWEstimator/'
+sys.path.append(path + '/code/')
+import ASWReaders
+import ASWEphemeris
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 import gpflow
 import GPFlowEnsemble as gpflowf
@@ -202,7 +198,7 @@ class ASWEstimator:
         for source in sources:
             print(source)
             print('----------------------------')
-            data_df = mr.SolarWindData(source, self.simstart, self.simstop).data
+            data_df = ASWReaders.SolarWindData(source, self.simstart, self.simstop).data
             if not data_df.isna().all().all(): 
                 available_sources.append(source)
                 available_data_dict[source] = data_df
@@ -298,42 +294,54 @@ class ASWEstimator:
         
         for source in self.availableSources:
             
-            # Format insitu data for HUXt's remove_ICMEs function
-            insitu = self.solar_wind[source].copy()
-            insitu.loc[:, 'mjd'] = self.solar_wind.loc[:, 'mjd']
+            # Avoid importing HUXt; instead, do a similar linear interpolation
+            source_icme_df = icme_df.query('affiliated_source == @source')
+            source_icme_series = pd.Series(index=self.solar_wind.index, data=False)
+            if len(source_icme_df) > 0:
+                for _, entry in source_icme_df.iterrows():
+                    start_mjd = entry['mjd'].mjd - self._icme_duration_buffer.to(u.day).value
+                    stop_mjd = start_mjd + entry['duration'] + 2*self._icme_duration_buffer.to(u.day).value
+                    
+                    icme_index = (self.solar_wind['mjd'] >= start_mjd) & (self.solar_wind['mjd'] < stop_mjd)
+                    source_icme_series.loc[icme_index] = True
             
-            # Format ICME data for HUXt's remove_ICMEs function
-            icmes = icme_df.query('affiliated_source == @source')
-            icmes.reset_index(inplace=True, drop=True)
-            if 'eventTime' in icmes.columns: 
-                icmes = icmes.rename(columns = {'eventTime': 'Shock_time'})
-                icmes['ICME_end'] = [row['Shock_time'] + datetime.timedelta(days=(row['duration'])) 
-                                     for _, row in icmes.iterrows()]
+            # # Format insitu data for HUXt's remove_ICMEs function
+            # insitu = self.solar_wind[source].copy()
+            # insitu.loc[:, 'mjd'] = self.solar_wind.loc[:, 'mjd']
             
-            # Interpolate over existing data gaps (NaNs), so they aren't caught as ICMEs
-            insitu.interpolate(method='linear', axis='columns', limit_direction='both', inplace=True)
+            # # Format ICME data for HUXt's remove_ICMEs function
+            # icmes = icme_df.query('affiliated_source == @source')
+            # icmes.reset_index(inplace=True, drop=True)
+            # if 'eventTime' in icmes.columns: 
+            #     icmes = icmes.rename(columns = {'eventTime': 'Shock_time'})
+            #     icmes['ICME_end'] = [row['Shock_time'] + datetime.timedelta(days=(row['duration'])) 
+            #                          for _, row in icmes.iterrows()]
             
-            # Extract the timesteps during which there is an ICME
-            if len(icmes) > 0:
-                insitu_noicme = Hin.remove_ICMEs(insitu, icmes, 
-                                                 params=['U'], 
-                                                 interpolate = False, 
-                                                 icme_buffer = self._icme_duration_buffer, 
-                                                 interp_buffer = self._icme_interp_buffer, 
-                                                 fill_vals = np.nan)
+            # # Interpolate over existing data gaps (NaNs), so they aren't caught as ICMEs
+            # insitu.interpolate(method='linear', axis='columns', limit_direction='both', inplace=True)
+            
+            # # Extract the timesteps during which there is an ICME
+            # if len(icmes) > 0:
+            #     breakpoint()
+            #     insitu_noicme = Hin.remove_ICMEs(insitu, icmes, 
+            #                                      params=['U'], 
+            #                                      interpolate = False, 
+            #                                      icme_buffer = self._icme_duration_buffer, 
+            #                                      interp_buffer = self._icme_interp_buffer, 
+            #                                      fill_vals = np.nan)
                 
-                icme_series = insitu_noicme['U'].isna().to_numpy()
+            #     icme_series = insitu_noicme['U'].isna().to_numpy()
                 
-            else:
-                insitu_noicme = insitu
+            # else:
+                # insitu_noicme = insitu
                 
-                icme_series = [None] * len(insitu)
+                # icme_series = [None] * len(insitu)
                 
             # Add ICME indices to background data
-            idx = self.solar_wind.columns.get_loc((source, insitu.columns[-2]))
-            self.solar_wind.insert(idx+1, (source, 'ICME'), icme_series)
+            idx = self.solar_wind.columns.get_loc((source, self.solar_wind[source].columns[-1]))
+            self.solar_wind.insert(idx+1, (source, 'ICME'), source_icme_series)
                           
-        return insitu_noicme['U'].isna()
+        return # insitu_noicme['U'].isna()
     
     @property
     def ephemeris(self):
@@ -342,7 +350,8 @@ class ASWEstimator:
         if len(self._ephemeris) == 0:
             print("No ephemeris loaded. Now generating...")
             for source in self.availableSources:
-                eph = H.Observer(source, Time(self.solar_wind.index))
+                eph = ASWEphemeris.ephemeris(source, Time(self.solar_wind.index), ephemeris_dir=path+'/ephemeris/')
+                # eph = H.Observer(source, Time(self.solar_wind.index))
                 self._ephemeris[source] = eph
                     
         return self._ephemeris
@@ -395,7 +404,7 @@ class ASWEstimator:
             if GP is True:
                 # self._backgroundDistributionMethod = 'GP'
                 
-                carrington_period = self.get_carringtonPeriod(self.ephemeris[source].r.mean())
+                carrington_period = self.get_carringtonPeriod(self.ephemeris[source]['r'].mean())
                 
                 summary, models = self._imputeBackgroundDistribution(
                     insitu_df, carrington_period, target_variables=target_variables)
@@ -892,8 +901,8 @@ class ASWEstimator:
                 lon_1d = bound['lon_grid']
                 mjd_1d = bound['t_grid']
                 lat_1d = np.interp(mjd_1d, 
-                                   self.ephemeris[source].time.mjd, 
-                                   self.ephemeris[source].lat_c.to(u.deg).value)
+                                   self.ephemeris[source]['time'].mjd, 
+                                   self.ephemeris[source]['lat_c'].to(u.deg).value)
                 
                 mjd_2d, lon_2d, = np.meshgrid(mjd_1d, lon_1d)
                 lat_2d, lon_2d, = np.meshgrid(lat_1d, lon_1d)
@@ -1317,7 +1326,7 @@ class ASWEstimator:
             # Rescale all coordinates
             lat = np.interp(self.boundaryDistributions3D['t_grid'],
                             self.solar_wind['mjd'],
-                            self.ephemeris[at].lat_c.to(u.deg).value)
+                            self.ephemeris[at]['lat_c'].to(u.deg).value)
             x_lat = self._boundaryScalers['lat_grid'].transform(lat[:, None])
             
             x_lon = self._boundaryScalers['lon_grid'].transform(self.boundaryDistributions3D['lon_grid'][:, None])
@@ -1423,7 +1432,7 @@ class ASWEstimator:
             # Rescale all coordinates
             lat = np.interp(self.boundaryDistributions3D['t_grid'],
                             self.solar_wind['mjd'],
-                            self.ephemeris[at].lat_c.to(u.deg).value)
+                            self.ephemeris[at]['lat_c'].to(u.deg).value)
             
             x_lat = lat[:, None]
             x_lon = self.boundaryDistributions3D['lon_grid'][:, None]
