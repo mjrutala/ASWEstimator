@@ -10,7 +10,8 @@ import numpy as np
 import datetime as dt
 import time
 import copy
-from tqdm.autonotebook import tqdm
+# from tqdm.autonotebook import tqdm
+from tqdm import tqdm
 import pandas as pd
 import tensorflow as tf
 
@@ -71,30 +72,38 @@ class EnsembleGPR:
             kernel = copy.deepcopy(k)
             
             if self.sigma_list is not None:
-                try:
-                    breakpoint()
-                    variance = self.sigma_list[i]**2
-                    variance[variance < 1e-5] = 1e-5 # Avoid <1e-6
-                    likelihood = gpflow.likelihoods.Gaussian(variance)
-                    gpflow.utilities.set_trainable(likelihood, False)
-                except:
-                    breakpoint()
+                # try:
+                #     breakpoint()
+                #     variance = self.sigma_list[i]**2
+                #     variance[variance < 1e-5] = 1e-5 # Avoid <1e-6
+                #     likelihood = gpflow.likelihoods.Gaussian(variance)
+                #     gpflow.utilities.set_trainable(likelihood, False)
+                # except:
+                #     breakpoint()
+                breakpoint()
             else:
                 likelihood = None
-                
             
             try:
                 import tensorflow_probability as tfp
                 custom_config = gpflow.config.Config(jitter=1e-5)
                 with gpflow.config.as_context(custom_config):
+                    # TESTING
+                    # Force uncertainties of 10% the overall standard deviation
+                    
+                    # likelihood = gpflow.likelihoods.Gaussian(variance=0.01**2)
+                    # likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.02**2))
+                    likelihood = gpflow.likelihoods.Gaussian(variance=0.01**2)
+                    likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.02**2))
+                    
                     model = gpflow.models.GPR((X, Y),
                                               kernel=kernel,
                                               mean_function=self.mean_function,
-                                              noise_variance=self.noise_variance,
-                                              likelihood=self.likelihood
+                                              # noise_variance=self.noise_variance,
+                                              likelihood=likelihood
                                               )
-                    model.likelihood.variance.assign(np.float64(0.01))
-                    model.likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.05))
+                    # model.likelihood.variance.assign(np.float64(0.01))
+                    # model.likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.05))
             except:
                 breakpoint()
                     
@@ -106,21 +115,21 @@ class EnsembleGPR:
                 breakpoint()
             
             # #++++++++++++++++++++++++++++++++++++++++++++++++++
-            if model.likelihood.variance > 0.5:
-                # Model is broken. Fix?
-                import matplotlib.pyplot as plt
-                Ymu, Ysigma2 = model.predict_f(X)
-                Ymu, Ysigma = Ymu.numpy(), np.sqrt(Ysigma2)
+            # if model.likelihood.variance > 0.5:
+            #     # Model is broken. Fix?
+            #     import matplotlib.pyplot as plt
+            #     Ymu, Ysigma2 = model.predict_f(X)
+            #     Ymu, Ysigma = Ymu.numpy(), np.sqrt(Ysigma2)
                 
-                fig, axs = plt.subplots(nrows=2)
-                axs[0].scatter(X.flatten(), Y.flatten(), color='black', marker='.', s=10, lw=0)
+            #     fig, axs = plt.subplots(nrows=2)
+            #     axs[0].scatter(X.flatten(), Y.flatten(), color='black', marker='.', s=10, lw=0)
                 
-                axs[0].plot(X.flatten(), Ymu.flatten(), color='xkcd:coral')
-                axs[0].fill_between(X.flatten(), (Ymu-np.sqrt(Ysigma2)).flatten(), (Ymu+np.sqrt(Ysigma2)).flatten(), color='xkcd:coral', lw=1, alpha=0.33)
+            #     axs[0].plot(X.flatten(), Ymu.flatten(), color='xkcd:coral')
+            #     axs[0].fill_between(X.flatten(), (Ymu-np.sqrt(Ysigma2)).flatten(), (Ymu+np.sqrt(Ysigma2)).flatten(), color='xkcd:coral', lw=1, alpha=0.33)
     
-                axs[1].scatter(X.flatten(), Y.flatten() - Ymu.flatten(), color='xkcd:coral')
-                plt.show()
-                breakpoint()
+            #     axs[1].scatter(X.flatten(), Y.flatten() - Ymu.flatten(), color='xkcd:coral')
+            #     plt.show()
+            #     breakpoint()
             # #--------------------------------------------------
             
             self.model_list.append(model)
@@ -269,23 +278,43 @@ class EnsembleGPR:
         from scipy.spatial.distance import cdist
         from scipy.special          import softmax
         
+        dist_cutoff = 100
+        softmax_scale = 10
+        
         # Calculate distance from all models
         dists = []
         for X_scalers, model in zip(self.X_scaler_list, self.model_list):
             # Scaled the input X
             X_scaled = X_scalers.transform(unscaled_X)
             dist_matrix = cdist(model.data[0], X_scaled)
-            dist_matrix[dist_matrix > 100] = 100
+            dist_matrix[dist_matrix > dist_cutoff] = dist_cutoff
             min_dists = dist_matrix.min(axis=0)
             
             dists.append(min_dists)
             
         dists = np.array(dists)
-        weights = softmax(100 - dists, axis=0)
+        weights = softmax(softmax_scale * (dist_cutoff - dists), axis=0)
         
         return weights
     
             
+    def print_summary(self):
+        import gpflow
+        # for model in self.model_list:
+        #     gpflow.utilities.print_summary(model, 'simple')
+            
+        df = pd.DataFrame()
+        for i, model in enumerate(self.model_list):
+            d = gpflow.utilities.parameter_dict(model)
+            
+            for key, value in d.items():
+                df.loc[i, key] = value.numpy()
+        
+        print(df)
+        
+        return df
+    
+    
     # def predict_f_samples(self, X_new, num_samples=1):
         
     #     weights = self.calculate_weights(X_new)
