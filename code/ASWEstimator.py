@@ -26,7 +26,7 @@ import ASWEphemeris
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 import gpflow
-import GPFlowEnsemble as gpflowf
+import GPFlowEnsemble
 
 # import huxt_inputs_wsa as Hin_wsa
 import queryDONKI
@@ -521,7 +521,7 @@ class ASWEstimator:
         
         # Physically motivated data chunking
         # Do this before fitting so each chunk may have an appropriate mean function
-        df_chunks = self._getChunksInTime(df, delta=90 * u.day)
+        df_chunks = self._getChunksInTime(df, delta=90*u.day, overlap=10*u.day)
         
         # Initialize objects to hold results from looping over target_variables
         bgDistribution_df = pd.DataFrame(index=df.index)
@@ -565,10 +565,10 @@ class ASWEstimator:
                 period_rescaled = np.float64(carrington_period.to(u.day).value * time_scaler.scale_[0])
                 period_gp = gpflow.Parameter(period_rescaled, trainable=False)
                 
-                # Only predict 1 Carrington Rotation forward
+                # Only predict 3 Carrington Rotation forward
                 min_x = np.float64(0)
-                mid_x = period_rescaled
-                max_x = np.float64(10) # 4*period_rescaled
+                mid_x = np.float64(period_rescaled)
+                max_x = np.float64(3*period_rescaled) # 4*period_rescaled
                 
                 lengthscale_gp = gpflow.Parameter(mid_x, 
                     transform = tfp.bijectors.SoftClip(min_x, max_x))
@@ -579,8 +579,13 @@ class ASWEstimator:
                     gpflow.kernels.SquaredExponential(lengthscales=period_gp),
                     period=period_gp)
                 
-                kernel = base_kernel + amplitude_kernel * period_kernel
-                # kernel = base_kernel + period_kernel
+                noise_kernel = gpflow.kernels.White(gpflow.Parameter(0.05**2, trainable=False))
+                # noise_kernel = gpflow.kernels.White(0.05**2)
+                # noise_kernel = gpflow.kernels.White(0.1**2)
+                
+                kernel = base_kernel + amplitude_kernel * period_kernel + noise_kernel
+                # kernel = base_kernel 
+                
                 
                 # =============================================================================
                 # ~Fancy~ Chunking  
@@ -634,7 +639,7 @@ class ASWEstimator:
         
         return bgDistribution_full_df, bgGPModels
     
-    def generate_boundaryDistributions(self, constant_percent_error=0.0):
+    def makeBoundaryDistributions(self, target_variables=['U'], constant_percent_error=0.0):
         from tqdm import tqdm
         # from dask.distributed import Client, as_completed, LocalCluster
         import multiprocessing as mp
@@ -643,70 +648,168 @@ class ASWEstimator:
         from tqdm import tqdm
         
         nCores = int(0.75 * mp.cpu_count()) 
-
-        rng = np.random.default_rng()
+        
+        ref_r = 1 * u.AU
+        
+        # Longitudinal x Time Grids
+        lon_grid = (np.arange(0, 360, 1) + 0.5) * u.deg
+        mjd_grid = (np.arange(self.simstarttime.mjd, self.simstoptime.mjd, 1) + 0.5) * u.day
+        
+        period_Carr_sidereal = self.get_carringtonPeriod(ref_r*1e6)
+        # Ballistically project background samples onto a sphere at ref_r
+        def ballistic_projection(df, eph, target_vars=['U']):
+            
+            speed = df['U'].to_numpy() * u.km / u.s
+            delta_r = ref_r - eph['r']
+            delta_t = delta_r / speed
+            mjd_ref = df['mjd'].to_numpy() * u.day + delta_t
+            
+            delta_lon = delta_t * (2 * np.pi * u.rad / period_Carr_sidereal)
+            lon_ref = np.unwrap(eph['lon_c']) + delta_lon
+            
+            # Estimate how many complete rotations are observed
+            rotation_number = np.ceil((lon_ref[0] - lon_ref[-1]) / (2*np.pi*u.rad))
+            
+            var_grid_dict = {}
+            for target_var in target_vars:
+                var_ref = df[target_var].to_numpy()
+                
+                var_grid = np.full((*lon_grid.shape, *mjd_grid.shape), np.nan)
+                
+                for l, lon in enumerate(lon_grid):
+                    
+                    # Find all times this carrington longitude is sampled
+                    lon_sample = lon + np.arange(-rotation_number, 1)*360*u.deg
+                    mjd_sample = np.interp(lon_sample, np.flip(lon_ref.to(u.deg)), np.flip(mjd_ref), left=np.nan, right=np.nan)
+                    var_sample = np.interp(lon_sample, np.flip(lon_ref.to(u.deg)), np.flip(var_ref), left=np.nan, right=np.nan)
+                    
+                    # Drop nans from overestimating the sampled lons
+                    mjd_sample = mjd_sample[~np.isnan(mjd_sample)]
+                    var_sample = var_sample[~np.isnan(var_sample)]
+                    
+                    # 
+                    res = np.interp(mjd_grid, np.flip(mjd_sample), np.flip(var_sample))
+                    var_grid[l, :] = res
+                
+            var_grid_dict.update({target_var: var_grid})
+            
+            return var_grid_dict
+        
+        # breakpoint()
+        # rng = np.random.default_rng()
         
         # methodOptions = ['forward', 'back', 'both']
-        methodOptions = ['both']
+        # methodOptions = ['both']
         
         boundaryDistributions_d = {}
         boundarySamples_d = {}
         for source in self.boundarySources:
-        
-            # Format the insitu df (backgroundDistribution) as HUXt expects it
-            insitu_df = self.backgroundDistributions[source].copy(deep=True)
-            insitu_df['BX_GSE'] =  -insitu_df['Br_mu']
-            insitu_df['V'] = insitu_df['U_mu']
-            insitu_df['datetime'] = insitu_df.index
-            insitu_df = insitu_df.reset_index()
-        
-            # Map inwards once to get the appropriate dimensions, etc.
-            # t, vcarr, bcarr = Hin.generate_vCarr_from_OMNI(self.simstart, self.simstop, omni_input=insitu_df)
-            t, vcarr, bcarr = Hin.generate_vCarr_from_insitu(self.simstart, self.simstop, 
-                                                             insitu_source=source, insitu_input=insitu_df)
             
-            # Sample the velocity distribution and assign random mapping directions (method)
-            # Randomly assigning these is equivalent to performing each mapping for each sample (for large numbers of samples)
-            # Having a single random population should be better mathematically
+            # # Project spacecraft measurements onto a sphere at ref_r
+            
+            # # Calculate the time lag to the reference radius
+            # speed = self.backgroundDistributions[source]['U_mu'].to_numpy() * u.km / u.s
+            # delta_r = ref_r - self.ephemeris[source]['r']
+            # delta_t = delta_r / speed
+            
+            # # Project onto the ref_r plane
+            # mjd_ref = self.backgroundDistributions['mjd'].to_numpy()*u.day + delta_t.to(u.day)
+            
+            # lon_c_unwrap = np.unwrap(self.ephemeris[source]['lon_c'])
+            # delta_lon_c = delta_t * 2 * np.pi * u.rad / self.get_carringtonPeriod(ref_r)
+            # lon_c_ref_unwrap = lon_c_unwrap - delta_lon_c
+            
+            # sortindx = np.argsort(lon_c_ref_unwrap)
+            
+            # var_ref = np.interp(lon_c_unwrap, lon_c_ref_unwrap[sortindx], speed[sortindx])
+            
+            # # Longitudinal x Time Grids
+            # lon_grid = (np.arange(0, 360, 1) + 0.5) * u.deg
+            # mjd_grid = (np.arange(self.simstarttime.mjd, self.simstoptime.mjd, 1) + 0.5) * u.day
+            
+            # var_grid = np.full((len(lon_grid), len(mjd_grid)), np.nan)
+            # for l, lon in enumerate(lon_grid):
+                
+            #     # Find all times this carrington longitude is sampled
+            #     lon_sample = lon + np.arange(-6, 6)*360*u.deg
+            #     mjd_sample = np.interp(lon_sample, np.flip(lon_c_unwrap.to(u.deg)), np.flip(mjd_ref), left=np.nan, right=np.nan)
+            #     var_sample = np.interp(lon_sample, np.flip(lon_c_unwrap.to(u.deg)), np.flip(var_ref), left=np.nan, right=np.nan)
+                
+            #     mjd_sample = mjd_sample[~np.isnan(mjd_sample)]
+            #     var_sample = var_sample[~np.isnan(var_sample)]
+                
+                
+            #     res = np.interp(mjd_grid, np.flip(mjd_sample), np.flip(var_sample))
+            #     var_grid[l, :] = res
+                
+                
+        
+            # # Format the insitu df (backgroundDistribution) as HUXt expects it
+            # insitu_df = self.backgroundDistributions[source].copy(deep=True)
+            # insitu_df['BX_GSE'] =  -insitu_df['Br_mu']
+            # insitu_df['V'] = insitu_df['U_mu']
+            # insitu_df['datetime'] = insitu_df.index
+            # insitu_df = insitu_df.reset_index()
+        
+            # # Map inwards once to get the appropriate dimensions, etc.
+            # # t, vcarr, bcarr = Hin.generate_vCarr_from_OMNI(self.simstart, self.simstop, omni_input=insitu_df)
+            # t, vcarr, bcarr = Hin.generate_vCarr_from_insitu(self.simstart, self.simstop, 
+            #                                                  insitu_source=source, insitu_input=insitu_df)
+            
+            # # Sample the velocity distribution and assign random mapping directions (method)
+            # # Randomly assigning these is equivalent to performing each mapping for each sample (for large numbers of samples)
+            # # Having a single random population should be better mathematically
+            
+            # breakpoint()
+    
+            # methodSamples = rng.choice(methodOptions, len(dfSamples))
             
             dfSamples = [df[source] for df in self.backgroundSamples]
-            methodSamples = rng.choice(methodOptions, len(dfSamples))
             
-            func = _map_vBoundaryInwards
-            funcGenerator = Parallel(return_as='generator', n_jobs=nCores)(
-                delayed(func)(self.simstart, self.simstop, source, df_sample, method_sample, self.ephemeris[source], self.innerbound)
-                for df_sample, method_sample in zip(dfSamples, methodSamples))
+            # This is reasonably fast, so avoid the overhead of parallelizing
             
-            result_tuples = list(tqdm(funcGenerator, total=len(dfSamples)))
+            # bpGenerator = Parallel(return_as='generator', n_jobs=nCores)(
+            #     delayed(ballistic_projection)(df_sample, self.ephemeris[source], target_variables)
+            #     for df_sample in zip(dfSamples))
+            # bpResult = list(tqdm(funcGenerator, total=len(dfSamples)))
             
-            vcarr_results = [result_tuple[0] for result_tuple in result_tuples]
-            bcarr_results = [result_tuple[1] for result_tuple in result_tuples]
+            bpResult = [ballistic_projection(dfSample, self.ephemeris[source], target_variables) for dfSample in dfSamples]
+            
+            # Go from list of dicts to dict of lists
+            varResult = {v:[d[v] for d in bpResult] for v in target_variables}
+            
+            # Get the mean and stadard deviation for each variable
+            var_mu = {v: np.mean(varResult[v], axis=0) for v in target_variables}
+            var_sigma = {v: np.std(varResult[v], axis=0) for v in target_variables}
+            
+            # vcarr_results = [result_tuple[0] for result_tuple in result_tuples]
+            # bcarr_results = [result_tuple[1] for result_tuple in result_tuples]
             
             # Characterize the resulting samples as one distribution
-            vcarr_mu = np.nanmean(vcarr_results, axis=0)
-            vcarr_sig = np.sqrt(np.nanstd(vcarr_results, axis=0)**2 + (vcarr_mu * constant_percent_error)**2)
+            # vcarr_mu = np.nanmean(vcarr_results, axis=0)
+            # vcarr_sig = np.sqrt(np.nanstd(vcarr_results, axis=0)**2 + (vcarr_mu * constant_percent_error)**2)
             
-            bcarr_mu = np.nanmean(bcarr_results, axis=0)
-            bcarr_sig = np.sqrt(np.nanstd(bcarr_results, axis=0)**2 + (bcarr_mu * constant_percent_error)**2)
+            # bcarr_mu = np.nanmean(bcarr_results, axis=0)
+            # bcarr_sig = np.sqrt(np.nanstd(bcarr_results, axis=0)**2 + (bcarr_mu * constant_percent_error)**2)
             
             # Get the left edges of longitude bins
-            lons = np.linspace(0, 360, vcarr_mu.shape[0]+1)[:-1]
+            # lons = np.linspace(0, 360, vcarr_mu.shape[0]+1)[:-1]
             
-            boundaryDistributions_d[source] = {'t_grid': t,
-                                               'lon_grid': lons, 
-                                               'U_mu_grid': vcarr_mu,
-                                               'U_sigma_grid': vcarr_sig,
-                                               'Br_mu_grid': bcarr_mu,
-                                               'Br_sigma_grid': bcarr_sig}
+            source_dict = {'t_grid': mjd_grid.value, 'lon_grid': lon_grid.value}
+            for v in target_variables:
+                source_dict[v+'_mu_grid'] = np.mean(varResult[v], axis=0)
+                source_dict[v+'_sigma_grid'] = np.std(varResult[v], axis=0)
+                
+            boundaryDistributions_d[source] = source_dict
             
             # For completeness, add boundarySamples here
             boundarySamples_d[source] = []
-            for result_tuple in result_tuples:
-                boundarySamples_d[source].append({'t_grid': t,
-                                                  'lon_grid': lons, 
-                                                  'U_grid': result_tuple[0],
-                                                  'B_grid': result_tuple[1]})
-        
+            for item in bpResult:
+                source_dict = {'t_grid': mjd_grid.value, 'lon_grid': lon_grid.value}
+                for v in target_variables:
+                    source_dict[v] = item[v]
+                boundarySamples_d[source].append(source_dict)
+                
         self.boundaryDistributions = boundaryDistributions_d
         self.boundarySamples = boundarySamples_d
         
@@ -1134,17 +1237,17 @@ class ASWEstimator:
             
             
             # TRY LIKELIHOOD
-            
+            breakpoint()
             X_samples = [s[:,:X.shape[1]] for s in XY_samples]
             Y_mu_samples = [s[:,X.shape[1]:X.shape[1]+Y_mu.shape[1]] for s in XY_samples]
             Y_sigma_samples = [s[:,-1][:,None] for s in XY_samples]
             
             # breakpoint()
             
-            model = GPFlowEnsemble(kernel_mu, X_samples, Y_mu_samples, Y_sigma_samples,
-                                   SGPR=1, 
-                                   interpolate_mean=(X,Y_mu))
-                                   # interpolate_mean=None)
+            model = GPFlowEnsemble.EnsembleGPR(kernel_mu, X_samples, Y_mu_samples, Y_sigma_samples,
+                                               SGPR=1, 
+                                               interpolate_mean=(X,Y_mu))
+                                               # interpolate_mean=None)
             
             # breakpoint()
             
@@ -1935,12 +2038,12 @@ class ASWEstimator:
     # (that could be separated from this file with no loss of generalization 
     # or context)
     # =========================================================================
-    def _getChunksInTime(self, df, delta=90 * u.day):
+    def _getChunksInTime(self, df, delta=90 * u.day, overlap=10*u.day):
         
         # We want each chunk to be as close to delta in length as possible
         # And to overlap on each side by overlap
         total_span = self.simstoptime - self.simstarttime
-        overlap = 10 * u.day
+        # overlap = 10 * u.day
         core_length = delta - 2 * overlap
         approx_chunks = (total_span - overlap) / (core_length + overlap)
         
