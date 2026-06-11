@@ -19,20 +19,30 @@ def CME(start, end):
     
     strptime = datetime.datetime.strptime
     
-    # Construct URL for the request
-    baseurl = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CME"
-    start_str = "?startDate=" + start.strftime("%Y-%m-%d")
-    end_str = "&endDate=" + end.strftime("%Y-%m-%d")
-    url = baseurl + start_str + end_str
+    # Split into chunks to read faster
+    starts = np.arange(start, end, datetime.timedelta(days=365)).astype(datetime.datetime)
+    ends = np.append(starts[1:], end)
+    dfs = []
     
-    # Check for a response and get the data
-    response = requests.get(url)
-    if response.status_code != 200:
-        print('cannot successfully get an http response')
-    
-    # read the data
-    print("Getting data from", url)
-    df = pd.read_json(url)
+    for start, end in zip(starts, ends):
+        # Construct URL for the request
+        baseurl = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CME"
+        start_str = "?startDate=" + start.strftime("%Y-%m-%d")
+        end_str = "&endDate=" + end.strftime("%Y-%m-%d")
+        url = baseurl + start_str + end_str
+        
+        # Check for a response and get the data
+        try:
+            response = requests.get(url)
+        except:
+            breakpoint()
+        if response.status_code != 200:
+            print('cannot successfully get an http response')
+        
+        # read the data
+        print("Getting data from", url)
+        dfs.append(pd.read_json(url))
+    df = pd.concat(dfs, ignore_index=True)
     
     # If df is length 0, create a dummy df with same columns
     if len(df) == 0:
@@ -52,6 +62,7 @@ def CME(start, end):
         if (row['cmeAnalyses'] is None) or (row['cmeAnalyses'] == []):
             notAnalyzed_index.append(index)
     df = df.drop(notAnalyzed_index, axis='index')
+    df = df.reset_index(drop=True)
     
     # Only keep the most recent CME analysis, and simplify instruments & linkedEvents
     for index, row in df.iterrows():
@@ -59,21 +70,19 @@ def CME(start, end):
         most_recent = np.argmax(cmeAnalysis_datetimes)   
         
         
-        # Keep the most recent analysis
+        # Keep the most recent analysis in this list of dicts
         row['cmeAnalyses'] = row['cmeAnalyses'][most_recent]
         # Drop the ENLIL model results?
         _ = row['cmeAnalyses'].pop('enlilList')
         # Flatten the instrument names
         row['instruments'] = [d['displayName'] for d in row['instruments']]
         # Flatten the linked events
-        if row['linkedEvents'] != None:
+        if row['linkedEvents'] is not None:
             row['linkedEvents'] = [d['activityID'] for d in row['linkedEvents']]
         else:
             row['linkedEvents'] = []
         df.loc[index] = row
     
-    # # I don't know what the purpose of this was...
-    # df = df.drop(index)
     return df
 
 def ICME(start, end, location='Earth', duration=1.5*u.day, ensureCME=True):

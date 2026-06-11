@@ -22,15 +22,19 @@ import multiprocessing as mp
 from joblib import Parallel, delayed, wrap_non_picklable_objects
 # from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
 import sklearn
-
+import tensorflow_probability as tfp
 
 class EnsembleGPR:
-    def __init__(self, X_list, Y_list, k_list, 
-                 X_scaler_list=None, Y_scaler_list=None):
+    def __init__(self, X_list, Y_list, k_lists, 
+                 X_scaler_list=None, Y_scaler_list=None, 
+                 Y_variance_list=None, Y_variance_scaler_list=None, variance_kernels=None,
+                 mean_function_list=None, jitter=1e-5):
+        
+        self.jitter = jitter
         
         self.X_list = X_list
         self.Y_list = Y_list
-        self.k_list = k_list
+        self.k_lists = k_lists # list of lists, potentially
         
         # In the future, implement auto-scaling (MinMaxScaler)?
         self.X_scaler_list = X_scaler_list
@@ -42,17 +46,22 @@ class EnsembleGPR:
             print("Not supported-- set Y scalers!")
             breakpoint()
         
-        self.GPR = True
-        self.SGPR = False
+        self.Y_variance_list = Y_variance_list
+        self.Y_variance_scaler_list = Y_variance_scaler_list
+        self.variance_kernels = variance_kernels
         
-        self.mean_function = None
-        self.noise_variance = None
-        self.likelihood = None
+        # self.GPR = True
+        # self.SGPR = False
         
-        self.sigma_list = None
+        self.mean_function_list = mean_function_list
+        # self.noise_variance = None
+        # self.likelihood = None
+        
+        # self.sigma_list = None
         
         # Track individual models in the ensemble
         self.model_list = []
+        self.variance_model_list = []
         
         return
     
@@ -60,7 +69,8 @@ class EnsembleGPR:
         
         n_GPs = len(self.X_list)
 
-        for X, Y, k in tqdm(zip(self.X_list, self.Y_list, self.k_list), desc='Optimizing {} GP Models'.format(n_GPs), total=n_GPs):
+        for i, (X, Y, k_list) in tqdm(enumerate(zip(self.X_list, self.Y_list, self.k_lists)), 
+                              desc='Optimizing {} GP Models'.format(n_GPs), total=n_GPs):
             # print("Optimizing GP model #{} with {} points".format(i+1, len(X)))
             # t1 = time.time()
             
@@ -68,74 +78,73 @@ class EnsembleGPR:
             def tqdm_callback(j):
                 pbar.update(1)
             
-            # Copy kernel so the model is freshly solved each loop
-            kernel = copy.deepcopy(k)
+            # Set up likelihood
+            likelihood = gpflow.likelihoods.Gaussian(variance=0.02**2)
+            likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.02**2))
             
-            if self.sigma_list is not None:
-                # try:
-                #     breakpoint()
-                #     variance = self.sigma_list[i]**2
-                #     variance[variance < 1e-5] = 1e-5 # Avoid <1e-6
-                #     likelihood = gpflow.likelihoods.Gaussian(variance)
-                #     gpflow.utilities.set_trainable(likelihood, False)
-                # except:
-                #     breakpoint()
-                breakpoint()
+            if self.mean_function_list is not None:
+                mean_function = self.mean_function_list[i]
             else:
-                likelihood = None
+                mean_function = None
             
-            try:
-                import tensorflow_probability as tfp
-                custom_config = gpflow.config.Config(jitter=1e-5)
+            # Try successively simpler kernels
+            if type(k_list) != list:
+                k_list = [k_list]
+            for kernel_ in k_list:
+                
+                # # Copy kernel so the model is freshly solved each loop
+                kernel = copy.deepcopy(kernel_)
+                
+                custom_config = gpflow.config.Config(jitter=self.jitter)
                 with gpflow.config.as_context(custom_config):
-                    # TESTING
-                    # Force uncertainties of 10% the overall standard deviation
-                    
-                    # likelihood = gpflow.likelihoods.Gaussian(variance=0.01**2)
-                    # likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.02**2))
-                    likelihood = gpflow.likelihoods.Gaussian(variance=0.01**2)
-                    likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.02**2))
-                    
                     model = gpflow.models.GPR((X, Y),
                                               kernel=kernel,
-                                              mean_function=self.mean_function,
+                                              mean_function=mean_function,
                                               # noise_variance=self.noise_variance,
-                                              likelihood=likelihood
+                                              likelihood=likelihood,
                                               )
-                    # model.likelihood.variance.assign(np.float64(0.01))
-                    # model.likelihood.variance.prior = tfp.distributions.HalfNormal(np.float64(0.05))
-            except:
-                breakpoint()
-                    
             
-            try:
                 opt = gpflow.optimizers.Scipy()
-                opt.minimize(model.training_loss, model.trainable_variables, callback=tqdm_callback)
-            except:
-                breakpoint()
-            
-            # #++++++++++++++++++++++++++++++++++++++++++++++++++
-            # if model.likelihood.variance > 0.5:
-            #     # Model is broken. Fix?
-            #     import matplotlib.pyplot as plt
-            #     Ymu, Ysigma2 = model.predict_f(X)
-            #     Ymu, Ysigma = Ymu.numpy(), np.sqrt(Ysigma2)
+                status = opt.minimize(
+                    model.training_loss,
+                    model.trainable_variables, 
+                    method='L-BFGS-B', 
+                    callback=tqdm_callback)
                 
-            #     fig, axs = plt.subplots(nrows=2)
-            #     axs[0].scatter(X.flatten(), Y.flatten(), color='black', marker='.', s=10, lw=0)
+                if status.success:
+                    break
                 
-            #     axs[0].plot(X.flatten(), Ymu.flatten(), color='xkcd:coral')
-            #     axs[0].fill_between(X.flatten(), (Ymu-np.sqrt(Ysigma2)).flatten(), (Ymu+np.sqrt(Ysigma2)).flatten(), color='xkcd:coral', lw=1, alpha=0.33)
-    
-            #     axs[1].scatter(X.flatten(), Y.flatten() - Ymu.flatten(), color='xkcd:coral')
-            #     plt.show()
-            #     breakpoint()
-            # #--------------------------------------------------
-            
             self.model_list.append(model)
+            
+            #
+            if self.Y_variance_list is not None:
+                for variance_kernel_ in self.variance_kernels:
+                    variance_kernel = copy.deepcopy(variance_kernel_)
+                    
+                    custom_config = gpflow.config.Config(jitter=self.jitter)
+                    with gpflow.config.as_context(custom_config):
+                        variance_model = gpflow.models.GPR(
+                            (X, self.Y_variance_list[i]), kernel = variance_kernel, likelihood=likelihood)
+                        
+                        v_opt = gpflow.optimizers.Scipy()
+                        v_status = v_opt.minimize(
+                            variance_model.training_loss, 
+                            variance_model.trainable_variables, 
+                            method='L-BFGS-B')
+                        
+                        if v_status.success:
+                            break
+                        
+                self.variance_model_list.append(variance_model)
+            
+            if not status.success:
+                print("All kernel options failed to optimize!")
+                breakpoint()
+                
             
             
         return
+    
     
     def predict_f(self, scaled_X=None, unscaled_X=None, chunk_size=None, cpu_fraction=None):
         
@@ -145,6 +154,87 @@ class EnsembleGPR:
             return
         elif (scaled_X is None) & (unscaled_X is not None):
             X = unscaled_X
+            
+        # Parse keywords for parallelizing
+        if cpu_fraction is None:
+            cpu_fraction = 0.50
+        n_jobs = int(cpu_fraction * mp.cpu_count())
+            
+        if chunk_size is None:
+            chunk_size = np.ceil(unscaled_X.shape[0] / n_jobs)
+        n_chunks = np.ceil(X.shape[0] / chunk_size)    
+        
+        mu, var = self._predict_f(X, n_chunks, n_jobs)
+        
+        # If there is a variance model, add it to the mean model variance 
+        if len(self.variance_model_list) > 0:
+            var_mu, var_var = self._predict_f(X, n_chunks, n_jobs, analyze_variance=True)
+            var = var + var_mu
+        
+        return mu, var
+    
+    def _predict_f(self, X, n_chunks, n_jobs, analyze_variance=False, full_cov=False):
+        
+        if analyze_variance:
+            model_list = self.variance_model_list
+            scaler_list = self.Y_variance_scaler_list
+        else:
+            model_list = self.model_list
+            scaler_list = self.Y_scaler_list
+        
+        # Chunk the data
+        X_chunked = np.array_split(X, n_chunks, axis=0)
+        
+        # Define an internal function to interact with gpflow
+        def _parallel_predict_f(EnsembleGPR, _X, model_list, scaler_list):
+            result_mu       = np.full((_X.shape[0],1), 0, dtype='float64')
+            result_sigma2   = np.full((_X.shape[0],1), 0, dtype='float64')   
+            
+            weights = EnsembleGPR._getWeights(_X)
+            
+            for i in range(len(model_list)):
+                model = model_list[i]
+                X_scalers = EnsembleGPR.X_scaler_list[i]
+                Y_scaler = scaler_list[i]
+                
+                # Get X, even if multiple scalers
+                _X_scaled = np.zeros(_X.shape)
+                for xi, X_scaler in enumerate(X_scalers):
+                    _X_scaled[:,xi:xi+1] = X_scaler.transform(_X[:,xi][:,None])
+                
+                f_mu, f_sigma2          = model.predict_f(_X_scaled)
+                result_mu       += Y_scaler.inverse_transform(f_mu) * weights[i][:,None]
+                
+                # Backing variance out of a Pipeline is difficult and unnecessary
+                try:
+                    result_sigma2  += (Y_scaler.scale_**2 * f_sigma2) * weights[i][:,None]
+                except:
+                    result_sigma2 += f_sigma2 * np.nan
+                
+            return result_mu, result_sigma2
+        
+        # Avoid the parallelization overhead if chunk_size == len(X_new)
+        if n_chunks > 1:
+            generator = Parallel(return_as='generator', n_jobs=n_jobs)(
+                delayed(_parallel_predict_f)(self, X_chunk, model_list, scaler_list) for X_chunk in X_chunked)
+        
+            results = list(tqdm(generator, total=len(X_chunked), desc="Predicting f(X)"))
+        else:
+            results = [_parallel_predict_f(self, X, model_list, scaler_list)]
+        
+        # Return mu, variance (sigma^2), and weights as lists of arrays
+        results_mu = np.concatenate([r[0] for r in results], axis=0)
+        results_sigma2 = np.concatenate([r[1] for r in results], axis=0)
+        
+        return results_mu, results_sigma2
+    
+    def predict_f_samples(self, scaled_X=None, unscaled_X=None, chunk_size=None, cpu_fraction=None, num_samples=1, full_cov=True):
+        # For the time being, assume X is datascaled
+        if unscaled_X is None:
+            print("Warning! Only data-scaled X is currently supported!")
+            return
+        elif (scaled_X is None) & (unscaled_X is not None):
+            X = unscaled_X
         
         
         # Parse keywords for parallelizing
@@ -154,52 +244,72 @@ class EnsembleGPR:
             
         if chunk_size is None:
             chunk_size = np.ceil(unscaled_X.shape[0] / n_jobs)
-
-        # Get the weights for all X and all models
-        # weights = self._getWeights(X)
-
-        # Chunk the data
         n_chunks = np.ceil(X.shape[0] / chunk_size)
+        
+        samples = self._predict_f_samples(X, n_chunks, n_jobs, num_samples)
+        
+        # If there is a variance model, add it to the mean model variance 
+        if len(self.variance_model_list) > 0:
+            
+            # This should probably draw the full covariance matrix in real space, then sample that using numpy
+            # But converting the covariance matrix throught the Pipeline is difficult
+            var_samples = self._predict_f_samples(X, n_chunks, n_jobs, num_samples, analyze_variance=True)
+            
+            rng = np.random.default_rng()
+            for i in range(len(samples)):
+                samples[i] = samples[i] + rng.normal(loc=var_samples[i]*0.0, scale=var_samples[i])
+        
+        return samples
+    
+    def _predict_f_samples(self, X, n_chunks, n_jobs, num_samples, analyze_variance=False, full_cov=False):
+        
+        if analyze_variance:
+            model_list = self.variance_model_list
+            scaler_list = self.Y_variance_scaler_list
+        else:
+            model_list = self.model_list
+            scaler_list = self.Y_scaler_list
+            
+        # Chunk the data
         X_chunked = np.array_split(X, n_chunks, axis=0)
-        # W_chunked = np.array_split(weights, n_chunks, axis=0)
         
         # Define an internal function to interact with gpflow
-        def _predict_f(EnsembleGPR, _X):
-            result_mu       = np.full(_X.shape, 0, dtype='float64')
-            result_sigma2   = np.full(_X.shape, 0, dtype='float64')   
+        def _internal_predict_f_samples(EnsembleGPR, _X, model_list, scaler_list):
+            result_samples = np.full((num_samples, _X.shape[0], 1), 0, dtype='float64')  
             
             weights = EnsembleGPR._getWeights(_X)
             
-            for i in range(len(EnsembleGPR.model_list)):
-                model = EnsembleGPR.model_list[i]
+            for i in range(len(model_list)):
+                model = model_list[i]
                 X_scalers = EnsembleGPR.X_scaler_list[i]
-                Y_scaler = EnsembleGPR.Y_scaler_list[i]
+                Y_scaler = scaler_list[i]
                 
-                _X_scaled = X_scalers.transform(_X)
-                # weights = EnsembleGPR._getWeights(_X_scaled)
+                # Get X, even if multiple scalers
+                _X_scaled = np.zeros(_X.shape)
+                for xi, X_scaler in enumerate(X_scalers):
+                    _X_scaled[:,xi:xi+1] = X_scaler.transform(_X[:,xi][:,None])
                 
-                f_mu, f_sigma2          = model.predict_f(_X_scaled)
-                result_mu       += Y_scaler.inverse_transform(f_mu) * weights[i][:,None]
-                result_sigma2  += (Y_scaler.scale_**2 * f_sigma2) * weights[i][:,None]
+                f_samples        = model.predict_f_samples(_X_scaled, num_samples, full_cov=full_cov)
+                for j in range(num_samples):
+                    result_samples[j:j+1,:,:] += Y_scaler.inverse_transform(f_samples[j]) * weights[i][:,None]
                 
-            return result_mu, result_sigma2
+            return result_samples
         
         # Avoid the parallelization overhead if chunk_size == len(X_new)
         if n_chunks > 1:
             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-                delayed(_predict_f)(self, X_chunk) for X_chunk in X_chunked)
+                delayed(_internal_predict_f_samples)(self, X_chunk, model_list, scaler_list) for X_chunk in X_chunked)
         
             results = list(tqdm(generator, total=len(X_chunked), desc="Predicting f(X)"))
         else:
-            results = [_predict_f(self, X_chunked)]
+            results = [_internal_predict_f_samples(self, X, model_list, scaler_list)]
         
-        # Return mu, variance (sigma^2), and weights as lists of arrays
-        results_mu = np.concatenate([r[0] for r in results], axis=0)
-        results_sigma2 = np.concatenate([r[1] for r in results], axis=0)
+        # Return
+        results = np.concatenate(results, axis=1)
         
-        return results_mu, results_sigma2
+        return results
     
-    def predict_f_samples(self, scaled_X=None, unscaled_X=None, chunk_size=None, cpu_fraction=None, num_samples=1, full_cov=True):
+    def predict_y(self, scaled_X=None, unscaled_X=None, chunk_size=None, cpu_fraction=None):
         
         # For the time being, assume X is datascaled
         if unscaled_X is None:
@@ -218,31 +328,13 @@ class EnsembleGPR:
 
         # Chunk the data
         n_chunks = np.ceil(X.shape[0] / chunk_size)
-        
-        # Custom chunking logic
-        # Chunk the model data, avoiding gaps, so that samples are continuous
-        # Then find overlaps with the input X
-        model_X = []
-        for X_scaler, model in zip(self.X_scaler_list, self.model_list):
-            
-            model_X.append(X_scaler.inverse_transform(model.data[0]))
-            
-        all_model_X = np.concatenate(model_X, axis=0)   
-        uniq_model_X = np.unique(all_model_X, axis=0)
-        model_X_chunks = np.array_split(uniq_model_X, n_chunks, axis=0)
-        
-        # Just use the last times in each model chunk to subset X
-        # In case of missing data/different data cadence, this prevents gaps
-        X_chunked = []
-        for i, c in enumerate(model_X_chunks):
-            start = X[0] if i == 0 else stop # Use the last stop value (noqa)
-            stop = X[-1]+1 if i == n_chunks-1 else c[-1]
-            overlap_index = (X >= start) & (X < stop)
-            X_chunked.append(X[overlap_index][:,None])
+        X_chunked = np.array_split(X, n_chunks, axis=0)
+        # W_chunked = np.array_split(weights, n_chunks, axis=0)
         
         # Define an internal function to interact with gpflow
-        def _predict_f(EnsembleGPR, _X):
-            result_samples = np.full((num_samples, *_X.shape), 0, dtype='float64')
+        def _predict_y(EnsembleGPR, _X):
+            result_mu       = np.full((_X.shape[0],1), 0, dtype='float64')
+            result_sigma2   = np.full((_X.shape[0],1), 0, dtype='float64')   
             
             weights = EnsembleGPR._getWeights(_X)
             
@@ -250,29 +342,33 @@ class EnsembleGPR:
                 model = EnsembleGPR.model_list[i]
                 X_scalers = EnsembleGPR.X_scaler_list[i]
                 Y_scaler = EnsembleGPR.Y_scaler_list[i]
-                shaped_weights = np.tile(weights[i][:,None], (num_samples,1,1))
-                                         
-                _X_scaled = X_scalers.transform(_X)
-                # weights = EnsembleGPR._getWeights(_X_scaled)
                 
-                f_samples = model.predict_f_samples(_X_scaled, num_samples=num_samples, full_cov=full_cov)
-                result_samples += np.array([Y_scaler.inverse_transform(f_sample) for f_sample in f_samples]) * shaped_weights
+                # Get X, even if multiple scalers
+                # _X_scaled = X_scalers.transform(_X)
+                _X_scaled = np.zeros(_X.shape)
+                for xi, X_scaler in enumerate(X_scalers):
+                    _X_scaled[:,xi:xi+1] = X_scaler.transform(_X[:,xi][:,None])
                 
-            return result_samples
+                y_mu, y_sigma2          = model.predict_y(_X_scaled)
+                result_mu       += Y_scaler.inverse_transform(y_mu) * weights[i][:,None]
+                result_sigma2  += (Y_scaler.scale_**2 * y_sigma2) * weights[i][:,None]
+                
+            return result_mu, result_sigma2
         
         # Avoid the parallelization overhead if chunk_size == len(X_new)
         if n_chunks > 1:
             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-                delayed(_predict_f)(self, X_chunk) for X_chunk in X_chunked)
+                delayed(_predict_y)(self, X_chunk) for X_chunk in X_chunked)
         
-            results = list(tqdm(generator, total=len(X_chunked), desc="Sampling f(X)"))
+            results = list(tqdm(generator, total=len(X_chunked), desc="Predicting f(X)"))
         else:
-            results = [_predict_f(self, X_chunked)]
+            results = [_predict_y(self, X)]
         
         # Return mu, variance (sigma^2), and weights as lists of arrays
-        results = np.concatenate(results, axis=1)
-
-        return results
+        results_mu = np.concatenate([r[0] for r in results], axis=0)
+        results_sigma2 = np.concatenate([r[1] for r in results], axis=0)
+        
+        return results_mu, results_sigma2
     
     def _getWeights(self, unscaled_X):
         from scipy.spatial.distance import cdist
@@ -284,8 +380,13 @@ class EnsembleGPR:
         # Calculate distance from all models
         dists = []
         for X_scalers, model in zip(self.X_scaler_list, self.model_list):
+            
             # Scaled the input X
-            X_scaled = X_scalers.transform(unscaled_X)
+            X_scaled = np.zeros(unscaled_X.shape)
+            for xi, X_scaler in enumerate(X_scalers):
+                X_scaled[:,xi:xi+1] = X_scaler.transform(unscaled_X[:,xi][:,None])
+            # X_scaled = X_scalers.transform(unscaled_X)
+            
             dist_matrix = cdist(model.data[0], X_scaled)
             dist_matrix[dist_matrix > dist_cutoff] = dist_cutoff
             min_dists = dist_matrix.min(axis=0)
@@ -294,6 +395,7 @@ class EnsembleGPR:
             
         dists = np.array(dists)
         weights = softmax(softmax_scale * (dist_cutoff - dists), axis=0)
+        
         
         return weights
     
@@ -313,262 +415,8 @@ class EnsembleGPR:
         print(df)
         
         return df
-    
-    
-    # def predict_f_samples(self, X_new, num_samples=1):
-        
-    #     weights = self.calculate_weights(X_new)
-        
-    #     result = np.full((num_samples, len(X_new), 1), 0, dtype='float64')
-    #     for w, model in zip(weights, self.model_list):
-    #         f_samples = model.predict_f_samples(X_new, num_samples)
-            
-    #         result += np.tile(w[:,None], (num_samples, 1, 1)) * f_samples.numpy()
-        
-    #     return result
-    
-    
-    
-    # def predict_f_samples(self, X_new_list, num_samples=1, chunk_size=None, cpu_fraction=None):
-    #     """
-    #     Predict the values of f, the underlying function of GP regression, 
-    #     without measurement errors.
-    #     If chunksize is supplied, do the prediction in parallel.
-
-    #     """
-    #     # Parse keywords for parallelizing
-    #     if chunk_size is None:
-    #         chunk_size = len(X_new_list[0])
-    #     if cpu_fraction is None:
-    #         cpu_fraction = 0.50
-        
-    #     n_jobs = int(cpu_fraction * mp.cpu_count())
-    #     breakpoint()
-    #     # Chunk the data
-    #     X_new_arr = np.array(X_new_list)
-    #     n_chunks = np.ceil(X_new_arr.shape[1] / chunk_size)
-    #     X_new_chunked = np.array_split(X_new_arr, n_chunks, axis=1)
-
-    #     # Define an internal function to interact with gpflow
-    #     def _predict_f_samples(GPFlowEnsemble, _X):
-    #         result_sample             = np.full((num_samples, *_X.shape), 0, dtype='float64')          
-    #         for i, (x, model) in enumerate(zip(_X, GPFlowEnsemble.model_list)):
-    #             f_sample              = model.predict_f_samples(x, num_samples)
-    #             result_sample[:,i,:,:] += f_sample.numpy()
-    #         return result_sample
-        
-    #     # Avoid the parallelization overhead if chunk_size == len(X_new)
-    #     if n_chunks > 1:
-    #         generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-    #             delayed(_predict_f_samples)(self, X_chunk) for X_chunk in X_new_chunked)
-        
-    #         results = list(tqdm(generator, total=len(X_new_chunked)))
-    #     else:
-    #         results = [_predict_f_samples(self, X_new_chunked)]
-        
-    #     # Return mu, variance (sigma^2), and weights as lists of arrays
-    #     results_sample = np.concatenate([r for r in results], axis=2)
-    #     weights = np.concatenate([self.getWeights(_X) for _X in X_new_chunked], axis=1)[:,:,None]
-    #     weights = np.repeat(weights[np.newaxis,:], 50, axis=0)
-        
-    #     return results_sample, weights
-    
-    
-    
-    
 
 
-# class GPFlowEnsemble:
-#     def __init__(self, kernel, X_list, Y_list, 
-#                  Y_sigma_list=None, noise_variance=None, weight_scaling=60, SGPR=1, interpolate_mean=None, overlap=15):
-    
-#         if SGPR==1:
-#             self.type = 'GPR'
-#         else:
-#             self.type = 'SGPR'
-#             self.inducing_point_fraction = SGPR
-    
-#         # Given variables
-#         self.kernel = kernel
-#         self.X_list = X_list
-#         self.Y_list = Y_list
-#         self.sigma_list = Y_sigma_list
-#         self.noise_variance = noise_variance
-#         self.weight_scaling = weight_scaling
-#         self.overlap = overlap
-        
-#         if interpolate_mean is not None:
-#             # self.mean_function = CustomMeanFunction(*interpolate_mean)
-#             breakpoint()
-#         else:
-#             self.mean_function = None
-        
-#         # Derived variables
-#         self.nChunks = len(X_list)
-#         self.model_list = []
-#         self.optimize_models()
-    
-    
-#     def optimize_models(self):
-        
-#         print("Optimizing {} GP models".format(self.nChunks))
-#         print("Current time: {}".format(dt.datetime.now().strftime("%H:%M:%S")))
-#         t0 = time.time()
-    
-#         for i, (X, Y) in enumerate(zip(self.X_list, self.Y_list)):
-#             print("Optimizing GP model #{} with {} points".format(i+1, len(X)))
-#             t1 = time.time()
-            
-#             # Copy kernel so the model is freshly solved each loop
-#             kernel = copy.deepcopy(self.kernel)
-#             # kernel = self.kernel
-            
-#             if self.sigma_list is not None:
-#                 try:
-#                     variance = self.sigma_list[i]**2
-#                     variance[variance < 1e-5] = 1e-5 # Avoid <1e-6
-#                     likelihood = gpflow.likelihoods.Gaussian(variance)
-#                     gpflow.utilities.set_trainable(likelihood, False)
-#                 except:
-#                     breakpoint()
-#             else:
-#                 likelihood = None
-                
-#             if self.type == 'GPR':
-#                 try:
-#                     model = gpflow.models.GPR((X, Y),
-#                                               kernel=kernel,
-#                                               mean_function=self.mean_function,
-#                                               noise_variance=self.noise_variance,
-#                                               likelihood=likelihood
-#                                               )
-#                 except:
-#                     breakpoint()
-                    
-#             elif self.type == 'SGPR':
-#                 # aim for 20 points
-#                 stepsize = int(np.round(1/self.inducing_point_fraction))
-#                 print("Step size for SGPR: {}".format(stepsize))
-#                 model = gpflow.models.SGPR((X, Y),
-#                                            kernel=kernel,
-#                                            # noise_variance=self.noise_variance,
-#                                            inducing_variable=X[::stepsize,:],
-#                                            likelihood=likelihood
-#                                            )
-#             else:
-#                 breakpoint()
-            
-#             try:
-#                 opt = gpflow.optimizers.Scipy()
-#                 opt.minimize(model.training_loss, model.trainable_variables)
-#             except:
-#                 breakpoint()
-            
-#             self.model_list.append(model)
-            
-#             if i == 0: first_kernel_iter = copy.deepcopy(self.kernel)
-            
-#             print("Completed in {:.1f} s".format(time.time() - t1))
-            
-#         print("All GP models optimized in {:.1f} s".format(time.time() - t0))
-#         return
-
-    
-#     def predict_f(self, X_new_list, chunk_size=None, cpu_fraction=None):
-#         """
-#         Predict the values of f, the underlying function of GP regression, 
-#         without measurement errors.
-#         If chunksize is supplied, do the prediction in parallel.
-
-#         """
-#         # Parse keywords for parallelizing
-#         if chunk_size is None:
-#             chunk_size = len(X_new_list[0])
-#         if cpu_fraction is None:
-#             cpu_fraction = 0.50
-        
-#         n_jobs = int(cpu_fraction * mp.cpu_count())
-        
-#         # Chunk the data
-#         X_new_arr = np.array(X_new_list)
-#         n_chunks = np.ceil(X_new_arr.shape[1] / chunk_size)
-#         X_new_chunked = np.array_split(X_new_arr, n_chunks, axis=1)
-
-#         # Define an internal function to interact with gpflow
-#         def _predict_f(GPFlowEnsemble, _X):
-#             result_mu       = np.full(_X.shape, 0, dtype='float64')
-#             result_sigma2   = np.full(_X.shape, 0, dtype='float64')            
-#             for i, (x, model) in enumerate(zip(_X, GPFlowEnsemble.model_list)):
-#                 f_mu, f_sigma2          = model.predict_f(x)
-#                 result_mu[i,:,:]       += f_mu.numpy()
-#                 result_sigma2 [i,:,:]  += f_sigma2.numpy()
-#             return result_mu, result_sigma2
-        
-#         # Avoid the parallelization overhead if chunk_size == len(X_new)
-#         if n_chunks > 1:
-#             generator = Parallel(return_as='generator', n_jobs=n_jobs)(
-#                 delayed(_predict_f)(self, X_chunk) for X_chunk in X_new_chunked)
-        
-#             results = list(tqdm(generator, total=len(X_new_chunked)))
-#         else:
-#             results = [_predict_f(self, X_new_chunked)]
-        
-#         # Return mu, variance (sigma^2), and weights as lists of arrays
-#         results_mu = np.concatenate([r[0] for r in results], axis=1)
-#         results_sigma2 = np.concatenate([r[1] for r in results], axis=1)
-#         weights = np.concatenate([self.getWeights(_X) for _X in X_new_chunked], axis=1)[:,:,None]
-        
-#         return results_mu, results_sigma2, weights
-    
-#     def getWeights(self, X_new_list):
-                                    
-#         from scipy.spatial.distance import cdist
-#         from scipy.special          import softmax
-        
-#         # The minimum distance characterizes which model is 'closest' to the new X
-#         dist_list = []
-#         for X_new, model in zip(X_new_list, self.model_list):
-#             dist_matrix = cdist(model.data[0], X_new)
-#             dist_matrix[dist_matrix > 100] = 100
-#             dist_list.append(dist_matrix.min(axis=0))
-        
-#         # Convert distances to an array and inverse scale them
-#         dist_arr = np.array(dist_list)
-#         initial_weight_arr = 1 - (dist_arr/100)
-        
-#         # Get the weights, and ditch small numbers
-#         # It would be ideal if we could scale these weights dynamically...
-#         # i.e., ensure that the weights are > 0.05 within 300 hours of another point
-#         # But for now, these weights have effectively no cross-talk
-#         weight_arr = softmax(initial_weight_arr*self.weight_scaling, axis=0)
-#         weight_arr[weight_arr < 1e-10] = 0
-        
-#         # As a check, calculate the average number of data points overlapping
-#         total_overlap = ((weight_arr > 0.05) & (weight_arr < 0.95)).sum()
-#         number_of_overlaps = (len(X_new_list) - 2) * 2 + 2
-#         average_overlap = total_overlap / number_of_overlaps
-        
-#         # Return the weights as a list
-#         weight_list = [weight_arr[i] for i in range(len(weight_arr))]
-        
-#         self.weight_average_overlap = average_overlap
-        
-#         return weight_list
-            
-#     # def predict_f_samples(self, X_new, num_samples=1):
-        
-#     #     weights = self.calculate_weights(X_new)
-        
-#     #     result = np.full((num_samples, len(X_new), 1), 0, dtype='float64')
-#     #     for w, model in zip(weights, self.model_list):
-#     #         f_samples = model.predict_f_samples(X_new, num_samples)
-            
-#     #         result += np.tile(w[:,None], (num_samples, 1, 1)) * f_samples.numpy()
-        
-#     #     return result
-    
-    
-    
 #     def predict_f_samples(self, X_new_list, num_samples=1, chunk_size=None, cpu_fraction=None):
 #         """
 #         Predict the values of f, the underlying function of GP regression, 
@@ -833,4 +681,19 @@ class EnsembleGPR:
     
 # #     # CIME interaction time @ Saturn (Palmerio+ 2021)
 # #     interaction_time = dt.datetime(2012, 6, 12, 00, 00)
+
+from check_shapes import inherit_check_shapes
+
+
+class FixedVarianceOfMean(gpflow.functions.Function):
+    def __init__(self, Y_var: gpflow.base.AnyNDArray):
+        super().__init__
+        self.var = Y_var
+
+    @inherit_check_shapes
+    def __call__(self, X: gpflow.base.TensorType) -> tf.Tensor:
+        return self.var
     
+    #@inherit_check_shapes
+    def variance_at(self, X: gpflow.base.TensorType) -> tf.Tensor:
+        return self.var
