@@ -156,6 +156,6 @@ def ICME(start, end, location='Earth', duration=1.5*u.day, ensureCME=True):
                 df.loc[index] = row
         
     # Set the duration of the event
-    df['duration'] = duration
+    df['duration'] = duration.value
 
     return df.reset_index()
