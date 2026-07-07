@@ -1,0 +1,19 @@
+name: ASWEstimator-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - gpflow
+  - pandas
+  - spyder-kernels=3.1
+  - matplotlib
+  - tqdm
+  - astropy
+  - dill
+  - tf-keras
+  - scikit-learn
+  - sunpy
+  - astroquery
+  - setuptools[version='<81']
+prefix: /Users/mrutala/miniconda3/envs/ASWEstimator-env
