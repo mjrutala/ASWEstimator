@@ -23,6 +23,7 @@ def ephemeris(target, times, ephemeris_dir=''):
     
     # Swapping the keys and values would make more intuitive sense, but
     # this allows better multiple-pattern-matching for spacecraft
+    # https://ssd.jpl.nasa.gov/horizons_batch.cgi?batch=1&COMMAND=%27*%27
     body_id_dict = {"199": ["MERCURY"],
                     "299": ["VENUS"],
                     "399": ["EARTH"],
@@ -37,7 +38,21 @@ def ephemeris(target, times, ephemeris_dir=''):
                     "-144": ["SOLAR ORBITER", "SOLO"],
                     "-202": ["MAVEN"],
                     "-234": ["STEREO A", "STA"],
-                    "-235": ["STEREO B", "STB"]
+                    "-235": ["STEREO B", "STB"],
+                    "-8": ["WIND"],
+                    "-9": ["ESCAPADE-BLUE"],
+                    "-10": ["ESCAPADE-GOLD"],
+                    "-21": ["SOHO"],
+                    "-28": ["JUICE"],
+                    "-31": ["VOYAGER 1"],
+                    "-32": ["VOYAGER 2"],
+                    "-41": ["MARS EXPRESS"],
+                    "-78": ["DSCOVR"],
+                    "-82": ["CASSINI"],
+                    "-92": ["ACE"],
+                    "-98": ["NEW HORIZONS"],
+                    "-159": ["EUROPA CLIPPER"],
+                    
                     }
     body_id = ''
     for key, names in body_id_dict.items():
