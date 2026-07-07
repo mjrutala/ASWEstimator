@@ -125,6 +125,7 @@ class SolarWindData:
             data_df = pd.read_csv(self.filepath, index_col='Epoch')
             data_df.index = pd.DatetimeIndex(data_df.index)
             data_df.query("@self.start <= index < @self.stop", inplace=True)
+            data_df.dropna(axis=0, inplace=True)
             
             # Find datetimes missing from dt_index
             missing_set = set(self.data.index) - set(data_df.index)
@@ -141,7 +142,7 @@ class SolarWindData:
                 for chunk in chunks:
                     partial_df = fn(chunk[0], chunk[-1]+datetime.timedelta(hours=1))
                     partial_dfs.append(partial_df)
-                    
+                
                 data_df = pd.concat(partial_dfs, axis='index')
                 data_df.sort_index(inplace=True)
                 
@@ -153,14 +154,15 @@ class SolarWindData:
             data_df = fn(self.start, self.stop)
         
         # very minor post-processing to decrease NaNs
+        data_df = data_df.apply(pd.to_numeric, errors='coerce')
         data_df = data_df.interpolate('time', limit=6, 
                                       limit_direction='both', limit_area='inside')
-        
+      
         # Assign this to self.data
         for col in self.data.columns:
             if col in data_df.columns:
-                self.data.loc[:,col] = pd.to_numeric(data_df.loc[:,col])
-
+                self.data.loc[data_df.index,col] = pd.to_numeric(data_df.loc[:,col])
+        
         # Wrap up by updating/creating the csv
         self.update_csv(self.data)
         
