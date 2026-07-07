@@ -19,11 +19,11 @@ import tensorflow as tf
 import dill as pickle
 import tensorflow_probability  as     tfp
 SoftClip = tfp.bijectors.SoftClip
-from scipy.spatial.distance import cdist
+# from scipy.spatial.distance import cdist
 from scipy.interpolate import RegularGridInterpolator
-from sklearn.preprocessing import FunctionTransformer
-from sklearn.pipeline import Pipeline
-from sunpy.coordinates.sun import carrington_rotation_number as sunpy_crn
+# from sklearn.preprocessing import FunctionTransformer
+# from sklearn.pipeline import Pipeline
+# from sunpy.coordinates.sun import carrington_rotation_number as sunpy_crn
 
 import sys
 path = '/Users/mrutala/projects/ASWEstimator/'
@@ -107,7 +107,24 @@ class ASWEstimator:
         with open(filename, 'wb') as f:
             import tensorflow as tf
             pickle.dump(self, f)
-    
+        # # Save the GPFlow models separately
+        # breakpoint()
+        # # Loop over each model
+        # for param_model_dict in self._backgroundModels.values():
+        #     for gpflow_ensemble in param_model_dict.values():
+        #         for model in gpflow_ensemble.model_list:
+                    
+        #             model.compiled_predict_f = tf.function(
+        #                 lambda Xnew: model.predict_f(Xnew, full_cov=False),
+        #                 input_signature=[tf.TensorSpec(shape=[None, 1], dtype=tf.float64)],
+        #                 )
+        #             model.compiled_predict_y = tf.function(
+        #                 lambda Xnew: model.predict_y(Xnew, full_cov=False),
+        #                 input_signature=[tf.TensorSpec(shape=[None, 1], dtype=tf.float64)],
+        #             )
+                    
+        #             tf.saved_model.save(model, '')
+                
     @classmethod
     def load(self, filename):
         with open(filename, 'rb') as f:
@@ -213,8 +230,10 @@ class ASWEstimator:
             if not data_df.isna().all().all(): 
                 available_sources.append(source)
                 available_data_dict[source] = data_df
-                
-        available_data_df = pd.concat(available_data_dict, axis='columns')
+        try: 
+            available_data_df = pd.concat(available_data_dict, axis='columns')
+        except:
+            breakpoint()
         available_data_df['mjd'] = Time(available_data_df.index).mjd
         
         self.solar_wind = available_data_df
@@ -639,14 +658,15 @@ class ASWEstimator:
         
         return bgDistribution_full_df, bgGPModels
     
-    def makeBoundaryDistributions(self, target_variables=['U'], constant_percent_error=0.0):
+    def makeBoundaryDistributions(self, target_variables=['U'], constant_percent_error=0.0,
+                                  lon_step = 3, mjd_step = 1):
         
         ref_r = 1 * u.AU
         
         # Longitudinal x Time Grids
-        lon_step = 3
+        # lon_step = 3
         lon_grid = np.arange(0, 360+lon_step/2, lon_step) * u.deg
-        mjd_grid = (np.arange(self.simstarttime.mjd, self.simstoptime.mjd+0.5, 1)) * u.day
+        mjd_grid = (np.arange(self.simstarttime.mjd, self.simstoptime.mjd+0.5, mjd_step)) * u.day
         
         # Sidereal period from quasi-infinite distance
         period_Carr_sidereal = self.get_carringtonPeriod(ref_r*1e9)
@@ -726,6 +746,7 @@ class ASWEstimator:
     
     def generate_boundaryDistribution3D(self, nLat=32, extend=None, GP=True, 
                                         target_variables = ['U'], num_samples=0,
+                                        lon_step=3, mjd_step=1, 
                                         **kwargs):
         
         # Get dimensions from OMNI boundary distribution, which *must* exist
@@ -733,8 +754,15 @@ class ASWEstimator:
         
         # Coordinates = (lat, lon, time)
         # Values = boundary speed, magnetic field* (*not implemented fully)
-        mjd_for3d = self.boundaryDistributions['omni']['t_grid']
-        lon_for3d = self.boundaryDistributions['omni']['lon_grid']
+        # mjd_for3d = self.boundaryDistributions['omni']['t_grid']
+        # lon_for3d = self.boundaryDistributions['omni']['lon_grid']
+        # lat_for3d = np.linspace(-self.latmax.value, self.latmax.value, nLat)
+        mjd_for3d = np.arange(self.boundaryDistributions['omni']['t_grid'][0], 
+                              self.boundaryDistributions['omni']['t_grid'][-1]+mjd_step/2, 
+                              mjd_step)
+        lon_for3d = np.arange(self.boundaryDistributions['omni']['lon_grid'][0], 
+                              self.boundaryDistributions['omni']['lon_grid'][-1]+lon_step/2, 
+                              lon_step)
         lat_for3d = np.linspace(-self.latmax.value, self.latmax.value, nLat)
         # lon_for3d = np.linspace(0, 360, nLon+1)[:-1]
         
@@ -1092,7 +1120,7 @@ class ASWEstimator:
                                               lat_for3d, 
                                               lon_for3d, 
                                               indexing='ij')
-            lon3d +=  (mjd_for3d - self.starttime.mjd)[:,None,None] * 360
+            # lon3d +=  (mjd_for3d - self.starttime.mjd)[:,None,None] * 360
             X_flat = np.hstack([mjd3d.flatten()[:,None], 
                                 lon3d.flatten()[:,None] ,
                                 lat3d.flatten()[:,None]])
