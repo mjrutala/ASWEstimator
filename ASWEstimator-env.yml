@@ -16,4 +16,3 @@ dependencies:
   - sunpy
   - astroquery
   - setuptools[version='<81']
-prefix: /Users/mrutala/miniconda3/envs/ASWEstimator-env
