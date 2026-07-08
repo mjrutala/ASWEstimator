@@ -169,8 +169,7 @@ class ASWEstimator:
     @property
     def supported_sources(self):
         supported_sources = [
-            'omni', 'parker solar probe', 'stereo a', 'stereo b', 'ulysses', 
-            'voyager 1', 'voyager 2'
+            'omni', 'stereo a', 'stereo b', 
             ]
         return supported_sources
     @property
@@ -599,12 +598,13 @@ class ASWEstimator:
                 # Only predict 3 Carrington Rotation forward
                 min_x = np.float64(0)
                 mid_x = np.float64(period_rescaled)
-                max_x = np.float64(3*period_rescaled) # 4*period_rescaled
+                max_x = np.float64(3*period_rescaled) 
                 
                 lengthscale_gp = gpflow.Parameter(mid_x, 
                     transform = tfp.bijectors.SoftClip(min_x, max_x))
-                ls_amplitude = gpflow.Parameter(np.float64(1.1*period_rescaled), 
-                    transform = tfp.bijectors.SoftClip(np.float64(0.99*period_rescaled), max_x))
+                ls_amplitude = gpflow.Parameter(mid_x, 
+                    # transform = tfp.bijectors.SoftClip(np.float64(0.9*period_rescaled), max_x))
+                    transform = tfp.bijectors.SoftClip(min_x, max_x))
                 
                 base_kernel = gpflow.kernels.RationalQuadratic(lengthscales = lengthscale_gp)
                 amplitude_kernel = gpflow.kernels.SquaredExponential(lengthscales = ls_amplitude)
@@ -612,7 +612,7 @@ class ASWEstimator:
                     gpflow.kernels.SquaredExponential(lengthscales=period_gp),
                     period=period_gp)
                 
-                noise_kernel = gpflow.kernels.White(gpflow.Parameter(0.05**2, trainable=False))
+                noise_kernel = gpflow.kernels.White(gpflow.Parameter(0.01**2, trainable=False))
                 # noise_kernel = gpflow.kernels.White(0.05**2)
                 # noise_kernel = gpflow.kernels.White(0.1**2)
                 
@@ -648,6 +648,7 @@ class ASWEstimator:
             bgDistribution_df['mjd'] = df['mjd'].to_numpy()
             bgDistribution_df[target_var+'_mu'] = fo_mu.mean(axis=1)
             bgDistribution_df[target_var+'_sigma'] = np.sqrt(fo_sigma2.mean(axis=1))
+            
         
         # Cast res and samples into full dfs
         bgDistribution_full_df = df.copy(deep=True)
