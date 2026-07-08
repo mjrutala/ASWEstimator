@@ -7,12 +7,8 @@ import numpy as np
 import scipy
 import time 
 import pandas as pd
-import statsmodels as sm
 import tqdm
 import astropy.units as u
-
-from sklearn.model_selection import GroupShuffleSplit
-from sklearn import metrics
 from pathlib import Path
 
 import sys
@@ -55,7 +51,7 @@ icme_duration   = 3.75 * u.day # conservative duration (Richardson & Cane 2010)
 icme_buffer     = 0.25 * u.day # onservative duration (Richardson & Cane 2010)
 interp_buffer   = 1.0 * u.day # how much to use in the interpolation
 
-n_splits = 12
+n_splits = 10
 
 num_samples = 10
 
@@ -115,7 +111,6 @@ for source in ref_input.boundarySources:
         split_dfs[i].loc[nonICME_index[test], (source, 'test')] = True
         split_dfs[i].loc[df.query("ICME == True").index, (source, 'icme')] = True
 
-breakpoint()
 # In[7]:
 
 
@@ -328,11 +323,11 @@ opt = GP_perf_by_span['E']/GP_perf_by_span['σd'] - LI_perf_by_span['E']/LI_perf
 opt_sort, opt_sort_indx = np.sort(opt.to_numpy()), np.argsort(opt.to_numpy())
 
 # %%
-ex1_indx    = 301 # opt_sort_indx[0]
+ex1_indx    = 21 # 8
 ex1         = GP_perf_by_span.loc[ex1_indx, :]
 
-ex2_indx    = opt_sort_indx[398]
-ex2         = GP_perf_by_span.loc[ex2_indx, :]
+# ex2_indx    = opt_sort_indx[398]
+# ex2         = GP_perf_by_span.loc[ex2_indx, :]
 
 # %% =============================================================================
 # A simple Taylor Diagram
@@ -353,7 +348,7 @@ plt.rc('ytick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('legend', fontsize=SMALL_SIZE)    # legend fontsize
 plt.rc('figure', titlesize=BIGGER_SIZE)
 
-gp_c = '#F37735'
+gp_c = '#f23524'
 li_c = '#FFC425'
 cmap = plt.get_cmap('winter')
 norm = mpl.colors.Normalize(vmin=0, vmax=0.6)
@@ -478,7 +473,7 @@ def plot_ax1(ax, ex):
     
     ax.plot(LI_inputs[split].backgroundDistributions['mjd'].mask(icme_indx, np.nan), 
             LI_inputs[split].backgroundDistributions.loc[:, (source, 'U_mu')],
-            color = li_c, lw = 1,
+            color = li_c, lw = 1, ls=':',
             label = 'LI')
     
     # Setup the axes
@@ -487,17 +482,17 @@ def plot_ax1(ax, ex):
            xticks=np.arange(center_mjd-delta1, center_mjd+delta2+10, 10),
            xticklabels=np.arange(0,delta1+delta2+10,10),
            ylim = [250, 850],
-           xlabel = 'Days Since {}'.format(Time(center_mjd-delta1, format='mjd').datetime.strftime('%Y-%m-%d %H:00')), 
-           ylabel = '$Flow Speed U$ [km/s]')
+           xlabel = 'Days Since {}'.format(Time(center_mjd-delta1, format='mjd').datetime.strftime('%Y %b %d %H:00')), 
+           ylabel = r'Flow Speed $U$ [km s$^{-1}$]')
     
     # Finally, shade the ICME & test locations
     ax.fill_between(ref_input.solar_wind['mjd'], ax1.get_ylim()[1],
                     where=split_dfs[split][(source, 'icme')], 
-                    color='xkcd:red', alpha=0.33, lw=0, 
+                    color='black', alpha=0.66, lw=0, 
                     label = 'True ICMEs')
     ax.fill_between(ref_input.solar_wind['mjd'], ax1.get_ylim()[1],
                     where=split_dfs[split][(source, 'test')], 
-                    color='black', alpha=0.11, lw=0, label = 'Simulated ICMEs')
+                    color='black', alpha=0.11, lw=0, label = 'Artificial ICME-length Gaps')
     
 plot_ax1(ax1, ex1)
 
@@ -506,14 +501,14 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle, FancyBboxPatch
 legenda_handles = [Line2D([], [], color='black', lw=2), 
                    Line2D([], [], color=gp_c, lw=2), 
-                   Line2D([], [], color=li_c, lw=2)]
+                   Line2D([], [], color=li_c, lw=2, ls=':')]
 legenda = ax1.legend(legenda_handles, ['Data', 'GP', 'LI'], 
                      ncols=3, bbox_to_anchor=(0.15, 0.96, 0.75, 0.022), loc='lower left',
                      mode="expand", borderaxespad=0., frameon=False, bbox_transform=fig.transFigure)
 
-legendb_handles = [Patch(color='xkcd:red', alpha=0.22, lw=0), 
+legendb_handles = [Patch(color='xkcd:black', alpha=0.44, lw=0), 
                    Patch(color='xkcd:black', alpha=0.11, lw=0)]
-legendb = ax1.legend(legendb_handles, ['True ICMEs', 'Simulated ICMEs'], 
+legendb = ax1.legend(legendb_handles, ['True ICMEs', 'Artificial ICME-length Gaps'], 
                      ncols=2, bbox_to_anchor=(0.15, 0.933, 0.75, 0.033), loc='lower left',
                      mode="expand", borderaxespad=0., frameon=False, bbox_transform=fig.transFigure)
 
@@ -607,7 +602,7 @@ ax3.yaxis.set_visible(False)
 ax3.annotate(r"$P_{\sigma} = \sigma_M / \sigma_D$",
              (0.5, -0.13), (0, 0), 'axes fraction', 'offset fontsize',
              ha='center', va='center', fontsize=ax3.xaxis.get_label().get_fontsize())
-ax3.annotate(r"$r_P$",
+ax3.annotate(r"$R$",
              (0.82, 0.82), (0, 0), 'axes fraction', 'offset fontsize',
              ha='center', va='center', rotation=-45, fontsize=ax3.xaxis.get_label().get_fontsize())
 
