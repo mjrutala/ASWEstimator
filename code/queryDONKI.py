@@ -20,28 +20,33 @@ def CME(start, end):
     strptime = datetime.datetime.strptime
     
     # Split into chunks to read faster
-    starts = np.arange(start, end, datetime.timedelta(days=365)).astype(datetime.datetime)
+    starts = np.arange(start, end, datetime.timedelta(days=50)).astype(datetime.datetime)
     ends = np.append(starts[1:], end)
     dfs = []
     
     for start, end in zip(starts, ends):
         # Construct URL for the request
-        baseurl = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/CME"
+        baseurl = "https://ccmc.gsfc.nasa.gov/DONKI-API/get/CME"
         start_str = "?startDate=" + start.strftime("%Y-%m-%d")
         end_str = "&endDate=" + end.strftime("%Y-%m-%d")
         url = baseurl + start_str + end_str
         
         # Check for a response and get the data
-        try:
+        while True:
             response = requests.get(url)
-        except:
-            breakpoint()
+            if response.status_code != 429:
+                break
+            else:
+                time.sleep(2 + int(response.headers['Retry-After']))
         if response.status_code != 200:
             print('cannot successfully get an http response')
         
         # read the data
         print("Getting data from", url)
-        dfs.append(pd.read_json(url))
+        try:
+            dfs.append(pd.read_json(url))
+        except:
+            breakpoint()
     df = pd.concat(dfs, ignore_index=True)
     
     # If df is length 0, create a dummy df with same columns
@@ -98,34 +103,58 @@ def ICME(start, end, location='Earth', duration=1.5*u.day, ensureCME=True):
     
     strptime = datetime.datetime.strptime
     
-    # Construct URL for the request
-    baseurl = "https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/IPS"
-    start_str = "?startDate=" + start.strftime("%Y-%m-%d")
-    end_str = "&endDate=" +  end.strftime("%Y-%m-%d")
-    location_str = "&location=" + location.replace(' ', '%20') #no space in URL
-    url = baseurl + start_str + end_str + location_str
-   
-    # Check for a response and get the data
-    try:
-        response = requests.get(url)
+    # Split into chunks to read faster
+    starts = np.arange(start, end, datetime.timedelta(days=50)).astype(datetime.datetime)
+    ends = np.append(starts[1:], end)
+    dfs = []
+    
+    for start, end in zip(starts, ends):
+        # Construct URL for the request
+        baseurl = "https://ccmc.gsfc.nasa.gov/DONKI-API/get/IPS"
+        start_str = "?startDate=" + start.strftime("%Y-%m-%d")
+        end_str = "&endDate=" +  end.strftime("%Y-%m-%d")
+        location_str = "&location=" + location
+        url = baseurl + start_str + end_str + location_str
+        
+        # Check for a response and get the data
+        while True:
+            response = requests.get(url)
+            if response.status_code != 429:
+                break
+            else:
+                time.sleep(2 + int(response.headers['Retry-After']))
         if response.status_code != 200:
             print('cannot successfully get an http response')
+            
         # read the data
         print("Getting data from", url)
-        df = pd.read_json(url)
-    except:
-        print('cannot successfully get an http response')
-        df = pd.DataFrame(columns=['catalog', 'activityID', 'location', 
-                                   'eventTime', 'submissionTime',
-                                   'versionId', 'link', 'instruments', 
-                                   'linkedEvents', 'sentNotifications'])
+        try:
+            dfs.append(pd.read_json(url))
+        except:
+            breakpoint()
+    df = pd.concat(dfs, ignore_index=True)
+
+    # # Check for a response and get the data
+    # try:
+    #     response = requests.get(url)
+    #     if response.status_code != 200:
+    #         print('cannot successfully get an http response')
+    #     # read the data
+    #     print("Getting data from", url)
+    #     df = pd.read_json(url)
+    # except:
+    #     print('cannot successfully get an http response')
+    #     df = pd.DataFrame(columns=['catalog', 'activityID', 'location', 
+    #                                'eventTime', 'submissionTime',
+    #                                'versionId', 'link', 'instruments', 
+    #                                'linkedEvents', 'sentNotifications'])
     
-    # If df is length 0, create a dummy df with same columns
-    if len(df) == 0:
-        df = pd.DataFrame(columns=['catalog', 'activityID', 'location', 
-                                   'eventTime', 'submissionTime',
-                                   'versionId', 'link', 'instruments', 
-                                   'linkedEvents', 'sentNotifications'])
+    # # If df is length 0, create a dummy df with same columns
+    # if len(df) == 0:
+    #     df = pd.DataFrame(columns=['catalog', 'activityID', 'location', 
+    #                                'eventTime', 'submissionTime',
+    #                                'versionId', 'link', 'instruments', 
+    #                                'linkedEvents', 'sentNotifications'])
     
     # Get useful datetimes
     time_fmt = "%Y-%m-%dT%H:%MZ"
