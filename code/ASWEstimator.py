@@ -526,7 +526,7 @@ class ASWEstimator:
         # The last and first values surrounding the ICME are thus a window-length mean
         # Then interpolate these, and fill back in for the original df, only where the ICME is present
         window = datetime.timedelta(days=2*self._icme_interp_buffer.to(u.day).value)
-        test = df[target_variables].rolling(window, center=True).mean()
+        test = df[target_variables].rolling(window, center=True).apply(np.nanmean)
         test[df['ICME']] = np.nan
         
         smooth_interp = test.interpolate('linear', limit_direction='both')
@@ -537,7 +537,12 @@ class ASWEstimator:
             df.loc[:, var+'_sigma'] = 0.0
             
             df.drop(columns=var, inplace=True)
-
+        
+        # Fill non-ICME gaps (in linear-interpolated data)
+        df = df.ffill().bfill()
+        
+        breakpoint()
+        
         return df
     
     def _imputeBackgroundDistribution(self, df, carrington_period,
@@ -548,7 +553,7 @@ class ASWEstimator:
         
         # Physically motivated data chunking
         # Do this before fitting so each chunk may have an appropriate mean function
-        df_chunks = self._getChunksInTime(df, delta=90*u.day, overlap=10*u.day)
+        df_chunks = self._getChunksInTime(df, delta=82*u.day, overlap=3*u.day)
         
         # Initialize objects to hold results from looping over target_variables
         bgDistribution_df = pd.DataFrame(index=df.index)
@@ -694,7 +699,10 @@ class ASWEstimator:
                 for l, lon in enumerate(lon_grid):
                     
                     # Find all times this carrington longitude is sampled
-                    lon_sample = lon + np.arange(-rotation_number, 1)*360*u.deg
+                    try:
+                        lon_sample = lon + np.arange(-rotation_number, 1)*360*u.deg
+                    except:
+                        breakpoint()
                     mjd_sample = np.interp(lon_sample, np.flip(lon_ref.to(u.deg)), np.flip(mjd_ref), left=np.nan, right=np.nan)
                     var_sample = np.interp(lon_sample, np.flip(lon_ref.to(u.deg)), np.flip(var_ref), left=np.nan, right=np.nan)
                     
@@ -814,7 +822,7 @@ class ASWEstimator:
     def _imputeBoundaryDistributions(self, lat_for3d, lon_for3d, mjd_for3d,
                                      # maximum_span = 90*u.day, 
                                      target_variables = ['U'],
-                                     chunk_duration = 20*u.day,
+                                     chunk_duration = 30*u.day,
                                      chunk_overlap = 5*u.day,
                                      samples_per_chunk = 2000,
                                      sample_grid = False,
@@ -1068,9 +1076,10 @@ class ASWEstimator:
                 random_sample_stats.append(stat_row)
             
             
-            if np.min(random_sample_stats) < 0.05:
+            if np.min(random_sample_stats) < 0.01:
                 print("Random sampling failed to draw a representative distribution!")
                 print("Run again with a larger sample size.")
+                breakpoint()
                 break
            
             # =================================================================
