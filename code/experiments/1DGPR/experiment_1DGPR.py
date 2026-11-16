@@ -323,7 +323,7 @@ opt = GP_perf_by_span['E']/GP_perf_by_span['σd'] - LI_perf_by_span['E']/LI_perf
 opt_sort, opt_sort_indx = np.sort(opt.to_numpy()), np.argsort(opt.to_numpy())
 
 # %%
-ex1_indx    = 21 # 8
+ex1_indx    = 284 # 21 # 8
 ex1         = GP_perf_by_span.loc[ex1_indx, :]
 
 # ex2_indx    = opt_sort_indx[398]
@@ -563,7 +563,7 @@ def plot_GP():
     r = GP_performance_flat.loc[:, 'r']
     c = GP_performance_flat.loc[:, 'PE']
 
-    x_mean, y_mean = TaylorCoords(σ.mean(), r.mean())
+    x_mean, y_mean = TaylorCoords(σ.median(), r.median())
     ax3.scatter(x_mean, y_mean, c=c.mean(),
                 cmap=cmap, norm=norm, s=128, alpha=1.0,
                 marker = 'X', ec = gp_c, lw=1, ls='-', zorder=10)
@@ -599,7 +599,7 @@ ax3.scatter(1, 0, c=c,
 # Setup the axes
 ax3.yaxis.set_visible(False)
 
-ax3.annotate(r"$P_{\sigma} = \sigma_M / \sigma_D$",
+ax3.annotate(r"$Q_{\sigma} = \sigma_M / \sigma_D$",
              (0.5, -0.13), (0, 0), 'axes fraction', 'offset fontsize',
              ha='center', va='center', fontsize=ax3.xaxis.get_label().get_fontsize())
 ax3.annotate(r"$R$",

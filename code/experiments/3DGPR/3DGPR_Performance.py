@@ -13,12 +13,13 @@ import numpy as np
 # import time 
 import pandas as pd
 # import statsmodels as sm
-import astropy.units as u
+# import astropy.units as u(np.std(true_series)/test_sigma)
 # from sklearn.model_selection import GroupShuffleSplit
 # from sklearn import metrics
 import dill as pickle
 from astropy.time import Time
 import matplotlib.dates as mdates
+import astropy.units as u
 
 
 from pathlib import Path
@@ -33,8 +34,9 @@ experiment_dir = Path('/Users/mrutala/projects/ASWEstimator/code/experiments/3DG
 
 
 start = datetime.datetime(2010, 4, 1)
+# start = datetime.datetime(2011, 9, 27)
 stop = datetime.datetime(2014, 9, 27)
-# stop = datetime.datetime(2011, 4, 1)
+# stop = datetime.datetime(2012, 9, 27)
 
 # Setup some common params
 rmax = 1.1
@@ -122,6 +124,32 @@ if not test_background_file.exists():
 else:
     inputs = ASWE.ASWEstimator.load(test_background_file)
 
+
+test_background_LI_file = experiment_dir / 'test_background_LI.pkl'
+if not test_background_LI_file.exists():
+    
+    inputs_LI = ASWE.ASWEstimator(start, stop, rmax=rmax, latmax=latmax)
+
+    # Specify typically-hard-coded parameters for clarity
+    inputs_LI.boundarySources              = ['omni', 'stereo a']
+    inputs_LI._icme_duration               = icme_duration
+    inputs_LI._icme_duration_buffer        = icme_buffer 
+    inputs_LI._icme_interp_buffer          = interp_buffer
+
+    # 
+    inputs_LI.getSolarWind()
+    inputs_LI.getTransients()
+
+    inputs_LI.makeBackgroundDistribution(
+        interpolate         = True,
+        GP                  = False,
+        # target_noise        = bg_target_noise,
+        # max_chunk_length    = bg_max_chunk_length,
+        n_samples           = bg_num_samples
+        )
+    inputs_LI.save(test_background_LI_file)
+else:
+    inputs_LI = ASWE.ASWEstimator.load(test_background_LI_file)
 # %% ==========================================================================
 # Step 4) Backmap to 21.5 solar radii to generate a boundary distribution
 #         Then split into 3 for 3D boundary distribution generation:
@@ -135,6 +163,10 @@ inputs_3DGP = inputs.copy()
 inputs_1DOMNI = inputs.copy()
 inputs_1DSTA = inputs.copy()
 
+inputs_LI.makeBoundaryDistributions(constant_percent_error=0)
+inputs_LI_3DGP = inputs_LI.copy()
+inputs_LI_1DOMNI = inputs_LI.copy()
+inputs_LI_1DSTA = inputs_LI.copy()
 # %% =============================================================================
 # Step 5) Get the boundary distributions
 # =============================================================================
@@ -143,7 +175,10 @@ if not test_boundary_file.exists():
     inputs_3DGP.generate_boundaryDistribution3D(
         nLat                = latnum,
         GP                  = True,
-        )
+        target_variables    = ['U'], 
+        chunk_duration      = 30*u.day,
+        chunk_overlap       = 3*u.day,
+        samples_per_chunk   = 1000)
     inputs_3DGP.save(test_boundary_file)
 else:
     inputs_3DGP = ASWE.ASWEstimator.load(test_boundary_file)
@@ -170,6 +205,9 @@ else:
 # CHECK PERFORMANCE
 inputs_1DOMNI.generate_boundaryDistribution3D(nLat=latnum, extend='omni', GP=False)
 inputs_1DSTA.generate_boundaryDistribution3D(nLat=latnum, extend='stereo a', GP=False)
+
+inputs_LI_1DOMNI.generate_boundaryDistribution3D(nLat = latnum, extend='omni', GP=False)
+inputs_LI_1DSTA.generate_boundaryDistribution3D(nLat = latnum, extend='stereo a', GP=False)
 
 # Ground-truth performance -- better be high!
 perfOMNI = performance.measure(pd.Series(inputs_3DGP.boundaryDistributions['omni']['U_mu_grid'].flatten()), 
@@ -248,6 +286,8 @@ else:
 bound1DSTB_fromOMNI, sample1DSTB_fromOMNI = inputs_1DOMNI.sample_boundaryDistribution3D('stereo b')
 bound1DSTB_fromSTA, sample1DSTB_fromSTA = inputs_1DSTA.sample_boundaryDistribution3D('stereo b')
 
+bound1DSTB_LI_fromOMNI, sample1DSTB_LI_fromOMNI = inputs_LI_1DOMNI.sample_boundaryDistribution3D('stereo b')
+bound1DSTB_LI_fromSTA, sample1DSTB_LI_fromSTA = inputs_LI_1DSTA.sample_boundaryDistribution3D('stereo b')
 
 
 # ==========================================================================
@@ -270,7 +310,11 @@ bounds_d = {'omni': bound1DSTB_fromOMNI,
     
 mjd2D, lon2D = np.meshgrid(bound1DSTB_from3DGP['t_grid'], bound1DSTB_from3DGP['lon_grid'], indexing='ij')
 trange_indx = (mjd2D >= inputs_3DGP.starttime.mjd) & (mjd2D < inputs_3DGP.stoptime.mjd)
-    
+STB_ICMEdays = np.unique(np.floor(inputs.solar_wind.loc[inputs.solar_wind['stereo b']['ICME'],'mjd']))
+for STB_ICMEday in STB_ICMEdays:
+    trange_indx[bound1DSTB_fromSTB['t_grid'] == STB_ICMEday,:] = False
+
+
 omni = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]), 
                            pd.Series(bound1DSTB_fromOMNI['U_mu_grid'][trange_indx]), 
                            pd.Series(bound1DSTB_fromOMNI['U_sigma_grid'][trange_indx]), 
@@ -283,12 +327,40 @@ gp = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx])
                          pd.Series(bound1DSTB_from3DGP['U_mu_grid'][trange_indx]), 
                          pd.Series(bound1DSTB_from3DGP['U_sigma_grid'][trange_indx]), 
                          )
-# # gp_samples = []
-# for i in range(len(sample1DSTB_from3DGP)):
-#     gp_sample = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]),
-#                                     pd.Series(sample1DSTB_from3DGP[i]['U'][trange_indx]))
-#     gp_samples.append(gp_sample)
-# gp_samples = pd.concat(gp_samples)
+# Also check the linear-interpolation versions
+omni_LI = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]), 
+                           pd.Series(bound1DSTB_LI_fromOMNI['U_mu_grid'][trange_indx]), 
+                           pd.Series(bound1DSTB_LI_fromOMNI['U_sigma_grid'][trange_indx]), 
+                           )
+sta_LI = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]), 
+                          pd.Series(bound1DSTB_LI_fromSTA['U_mu_grid'][trange_indx]), 
+                          pd.Series(bound1DSTB_LI_fromSTA['U_sigma_grid'][trange_indx]), 
+                          )
+
+# Finally, perform latitude-weighting for GP- and LI-initiated versions
+STB_lat = np.interp(bound1DSTB_fromOMNI['t_grid'], inputs.ephemeris['stereo b']['time'].mjd, inputs.ephemeris['stereo b']['lat'])
+OMNI_lat = np.interp(bound1DSTB_fromOMNI['t_grid'], inputs.ephemeris['omni']['time'].mjd, inputs.ephemeris['omni']['lat'])
+STA_lat = np.interp(bound1DSTB_fromOMNI['t_grid'], inputs.ephemeris['stereo a']['time'].mjd, inputs.ephemeris['stereo a']['lat'])
+
+OMNI_weight = (1 - ((OMNI_lat - STB_lat)/(OMNI_lat - STA_lat)).clip(min=0, max=1)).value
+STA_weight = 1 - OMNI_weight
+
+omni_sta_blended = bound1DSTB_fromOMNI.copy()
+omni_sta_blended['U_mu_grid'] = bound1DSTB_fromOMNI['U_mu_grid'] * OMNI_weight[:,None] +  bound1DSTB_fromSTA['U_mu_grid'] * STA_weight[:,None]
+omni_sta_blended['U_sigma_grid'] = bound1DSTB_fromOMNI['U_sigma_grid'] * OMNI_weight[:,None] +  bound1DSTB_fromSTA['U_sigma_grid'] * STA_weight[:,None]
+
+omni_sta_LI_blended = bound1DSTB_LI_fromOMNI.copy()
+omni_sta_LI_blended['U_mu_grid'] = bound1DSTB_LI_fromOMNI['U_mu_grid'] * OMNI_weight[:,None] +  bound1DSTB_LI_fromSTA['U_mu_grid'] * STA_weight[:,None]
+omni_sta_LI_blended['U_sigma_grid'] = bound1DSTB_LI_fromOMNI['U_sigma_grid'] * OMNI_weight[:,None] +  bound1DSTB_LI_fromSTA['U_sigma_grid'] * STA_weight[:,None]
+
+blend = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]), 
+                            pd.Series(omni_sta_blended['U_mu_grid'][trange_indx]), 
+                            pd.Series(omni_sta_blended['U_sigma_grid'][trange_indx]), 
+                            )
+blend_LI = performance.measure(pd.Series(bound1DSTB_fromSTB['U_mu_grid'][trange_indx]), 
+                               pd.Series(omni_sta_LI_blended['U_mu_grid'][trange_indx]), 
+                               pd.Series(omni_sta_LI_blended['U_sigma_grid'][trange_indx]), 
+                               )
 
 # =============================================================================
 # The real figure
@@ -720,19 +792,22 @@ plt.savefig(experiment_dir / "3_3DGPR_Performance_option1.png", dpi=300)
 plt.savefig(experiment_dir / "3_3DGPR_Performance_option1.eps")
 
 # %%
-fig = plt.figure(figsize=[(244 + 244 + 20)/72, (244 + 10)/72])
+fig = plt.figure(figsize=[(244 + 244 + 20)/72, (244 + 20)/72])
+
+ax0 = fig.add_subplot(6, 1, 1)
+ax0.set_position([0.075, 0.7125, 0.45, 0.13])
 
 ax1 = fig.add_subplot(6, 1, 1)
-ax1.set_position([0.075, 0.6675, 0.45, 0.16])
+ax1.set_position([0.075, 0.5625, 0.45, 0.13])
 
 ax2 = fig.add_subplot(6, 1, 2)
-ax2.set_position([0.075, 0.4825, 0.45, 0.16])
+ax2.set_position([0.075, 0.4125, 0.45, 0.13])
 
 ax3 = fig.add_subplot(6, 1, 3)
-ax3.set_position([0.075, 0.2975, 0.45, 0.16])
+ax3.set_position([0.075, 0.2625, 0.45, 0.13])
 
 ax4 = fig.add_subplot(6, 1, 4)
-ax4.set_position([0.075, 0.1125, 0.45, 0.16])
+ax4.set_position([0.075, 0.1125, 0.45, 0.13])
 
 cax4 = fig.add_axes([0.5375, 0.1125, 0.025, 0.715])
 cax4_err = fig.add_axes([0.075, 0.8525, 0.45, 0.05])
@@ -743,14 +818,20 @@ ax5.set_position([0.700, 0.6675, 0.275, 0.235])
 ax6 = fig.add_subplot(6, 1, 6)
 ax6.set_position([0.7375, 0.1125, 0.225, 0.45])
 
-ax6 = init_TaylorDiagram([0, 1.2], [0, 1], ax=ax6)
+ax6 = init_TaylorDiagram([0.0, 1.2], [0, 1], ax=ax6)
 
 cax6 = fig.add_axes([0.700, 0.1125, 0.025, 0.45]) 
 
-c_omni  = '#90be6d'
-c_sta   = '#43aa8b'
-c_stb   = '#577590'
-c_gp    = '#F37735'
+# c_omni  = '#90be6d'
+# c_sta   = '#43aa8b'
+# c_stb   = '#577590'
+# c_gp    = '#F37735'
+# c_blend = '#71B679'
+c_sta   = [0.978422, 0.557937, 0.034931, 1.      ]
+c_blend = [0.865006, 0.316822, 0.226055, 1.      ]
+c_omni  = [0.658463, 0.178962, 0.372748, 1.      ]
+c_gp    = [0.416331, 0.090203, 0.432943, 1.      ]
+c_stb   = [0.169575, 0.042489, 0.340874, 1.      ]
 
 cmap_2D = plt.get_cmap('plasma')
 norm_2D = mpl.colors.Normalize(vmin=300, vmax=600)
@@ -764,15 +845,17 @@ norm_2D_err = mpl.colors.Normalize(vmin=0, vmax=0.25)
 cmap_TD = plt.get_cmap('winter')
 norm_TD = mpl.colors.Normalize(vmin=0, vmax=0.5)
 
-bounds_d = {"STEREO B": bound1DSTB_fromSTB,
-            "OMNI": bound1DSTB_fromOMNI,
-            "STEREO A": bound1DSTB_fromSTA,
-            "3D GP": bound1DSTB_from3DGP}   
+bounds_d = {"STEREO-A": bound1DSTB_LI_fromSTA,
+            "3D GP": bound1DSTB_from3DGP, 
+            "Avg.": omni_sta_LI_blended,
+            "STEREO-B": bound1DSTB_fromSTB,
+            "OMNI": bound1DSTB_LI_fromOMNI,
+            }   
 
-target_mjd = 56279
+target_mjd = 56400
 
 # Plot the extracted 2D boundaries
-for (label, bound), ax in zip(bounds_d.items(), [ax1, ax2, ax3, ax4]):
+for (label, bound), ax in zip({k:bounds_d[k] for k in ['STEREO-A', 'Avg.', 'OMNI',  '3D GP', 'STEREO-B']}.items(), [ax0, ax1, ax2, ax3, ax4]):
     img = ax.pcolormesh(bound['t_grid'], 
                         bound['lon_grid'], 
                         bound['U_mu_grid'].T, 
@@ -782,17 +865,14 @@ for (label, bound), ax in zip(bounds_d.items(), [ax1, ax2, ax3, ax4]):
                          bound['lon_grid'], 
                          (bound['U_sigma_grid'] / bound['U_mu_grid']).T, 
                          cmap=cmap_2D_err, norm=norm_2D_err)
-    # for rgba, 
-    # #     for i, j in zip(img.get_facecolors(), bound['U_sigma_grid'].flatten()):
-    # #         norm_j = (j - np.nanmin(j))/(np.nanmax(j) - np.nanmin(j))
-    # #         i[3] = norm_j # Set the alpha value of the RGBA tuple using m2
     
     ax.set(xlim=[inputs_1DSTB.starttime.mjd, inputs_1DSTB.stoptime.mjd], 
            ylim=[0,360], yticks=[0,120,240,360])
     
     ax.axvline(target_mjd, color='xkcd:lime green', linestyle='--', lw=2)
 
-plt.colorbar(mpl.cm.ScalarMappable(cmap=cmap_2D, norm=norm_2D), cax=cax4, label='Flow Speed U [km/s]')
+ax4.tick_params(axis='x', which='major', pad=2)
+plt.colorbar(mpl.cm.ScalarMappable(cmap=cmap_2D, norm=norm_2D), cax=cax4, label=r'Flow Speed U [km s$^{-1}$]')
 
 def percent_error_colorbar(err_cmap, err_norm, base_cmap, base_norm, n=11, cax=None):
     import matplotlib.ticker as ticker
@@ -811,48 +891,77 @@ def percent_error_colorbar(err_cmap, err_norm, base_cmap, base_norm, n=11, cax=N
     cax.xaxis.tick_top()
     cax.xaxis.set_label_position('top') 
     cax.set(xticks = y[::2], 
-            xticklabels = ['{:.0f}%'.format(_*100) for _ in y[::2]], 
+            xticklabels = ['{:.0f}'.format(_*100) for _ in y[::2]], 
             xlabel='Percent Uncertainty')
     cax.xaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+    cax.tick_params(axis='x', which='major', pad=2)
     
     return
 percent_error_colorbar(cmap_2D_err, norm_2D_err, cmap_2D, norm_2D, n=11, cax=cax4_err)
 
 # Plot the extracted 1D boundaries
-for (label, bound), color, zorder, name in zip(bounds_d.items(), [c_stb, c_omni, c_sta, c_gp], [1, -1, -2, 2], ['STEREO-B', 'STEREO-A', 'OMNI', 'GP']):
+line_handles = []
+for (label, bound), color, zorder in zip(bounds_d.items(), [c_sta, c_gp, c_blend, c_stb, c_omni], [-2, 1, -1, 2, 0]):
 
      t_indx = np.argmin(np.abs(bound['t_grid'] - target_mjd))
-     ax5.plot(bound['lon_grid'], bound['U_mu_grid'][t_indx, :],
-              color=color, lw=1, zorder=zorder, label=name)
+     _, = ax5.plot(bound['lon_grid'], bound['U_mu_grid'][t_indx, :],
+                  color=color, lw=1, zorder=zorder, label=label)
+     line_handles.append(_)
      ax5.fill_between(bound['lon_grid'], 
                       bound['U_mu_grid'][t_indx, :] - bound['U_sigma_grid'][t_indx, :], 
                       bound['U_mu_grid'][t_indx, :] + bound['U_sigma_grid'][t_indx, :], 
                       color=color, alpha=0.2, zorder=zorder)
-ax5.legend(ncols=4, bbox_to_anchor=(0.7, 0.9275, 0.275, 0.05), loc='lower left',
-           mode="expand", borderaxespad=0., edgecolor='black', bbox_transform=fig.transFigure, 
-           labelcolor='linecolor', handlelength=0, prop={'weight': 'bold'})
+     
+ax5.legend(handles=line_handles, ncols=3, bbox_to_anchor=(0.7, 0.9025, 0.275, 0.05), loc='lower left',
+                mode="expand", borderaxespad=0., edgecolor='black', bbox_transform=fig.transFigure, 
+                labelcolor='linecolor', handlelength=0, frameon=False)
+
 ax5.set(xlim=[0,360], xticks=[0, 90, 180, 270, 360], 
-        ylim=[norm_2D.vmin-50, 550], ylabel='U [km/s]')
+        ylim=[norm_2D.vmin-50, 650], ylabel=r'U [km s$^{-1}$]')
 fig.text(0.66318898, 0.62576772, r'$\lambda [^\circ]$', transform=fig.transFigure, ha='left', va='center')
 
 # Plot the TD
-x, y = TaylorCoords(omni['σm']/omni['σd'], omni['r'])
-c = (omni['PE'][0] + sta['PE'][0])/2
+x, y = TaylorCoords(omni_LI['σm']/omni_LI['σd'], omni_LI['r'])
+c = omni_LI['PE'][0]
 ax6.scatter(x, y, c=c,
-            cmap=cmap_TD, norm=norm_TD, s=64, alpha=1.0,
-            marker = 'P', lw=1, ec=c_omni)
+            cmap=cmap_TD, norm=norm_TD, s=96, alpha=1.0,
+            marker = '^', lw=1.5, ec=c_omni)
 
-x, y = TaylorCoords(sta['σm']/sta['σd'], sta['r'])
-c = (omni['PE'][0] + sta['PE'][0])/2
+x, y = TaylorCoords(blend_LI['σm']/blend_LI['σd'], blend_LI['r'])
+c = blend_LI['PE'][0]
 ax6.scatter(x, y, c=c,
-            s=64, alpha=1.0,
-            marker = 'P', lw=1, ec=c_sta)
+            cmap=cmap_TD, norm=norm_TD, s=96, alpha=1.0,
+            marker = '^', lw=1.5, ec=c_blend)
+
+x, y = TaylorCoords(sta_LI['σm']/sta_LI['σd'], sta_LI['r'])
+c = sta_LI['PE'][0]
+ax6.scatter(x, y, c=c,
+            cmap=cmap_TD, norm=norm_TD, s=96, alpha=1.0,
+            marker = '^', lw=1.5, ec=c_sta)
+
+# x, y = TaylorCoords(omni['σm']/omni['σd'], omni['r'])
+# c = omni['PE'][0]
+# ax6.scatter(x, y, c=c,
+#             cmap=cmap_TD, norm=norm_TD, s=64, alpha=1.0,
+#             marker = 'P', lw=1, ec=c_omni)
+
+# x, y = TaylorCoords(sta['σm']/sta['σd'], sta['r'])
+# c = sta['PE'][0]
+# ax6.scatter(x, y, c=c,
+#             cmap=cmap_TD, norm=norm_TD, s=64, alpha=1.0,
+#             marker = 'P', lw=1, ec=c_sta)
+
+# x, y = TaylorCoords(blend['σm']/blend['σd'], blend['r'])
+# c = blend['PE'][0]
+# ax6.scatter(x, y, c=c,
+#             cmap=cmap_TD, norm=norm_TD, s=64, alpha=1.0,
+#             marker = 'P', lw=1, ec=c_blend)
 
 x, y = TaylorCoords(gp['σm']/gp['σd'], gp['r'])
 c = gp['PE'][0]
 ax6.scatter(x, y, c=c,
-            cmap=cmap_TD, norm=norm_TD, s=64, alpha=1.0,
-            marker = 'X', lw=1, ec=c_gp)
+            cmap=cmap_TD, norm=norm_TD, s=96, alpha=1.0,
+            marker = 'X', lw=1.5, ec=c_gp)
     
 x, y = TaylorCoords(1, 1)
 ax6.scatter(x, y, c=1, cmap=cmap_TD, norm=norm_TD, s=128, alpha=1.0,
@@ -862,7 +971,7 @@ plt.colorbar(mpl.cm.ScalarMappable(cmap=cmap_TD, norm=norm_TD),
              cax=cax6, orientation='vertical', location='left',
              label='Prediction Efficiency (PE)')
 
-ax6.annotate(r"$P_{\sigma} = \sigma_M / \sigma_D$",
+ax6.annotate(r"$Q_{\sigma} = \sigma_M / \sigma_D$",
              (0.5, -0.2), (0, 0), 'axes fraction', 'offset fontsize',
              ha='center', va='center', fontsize=ax3.xaxis.get_label().get_fontsize())
 ax6.annotate(r"$R$",
@@ -877,19 +986,21 @@ x2 = ax4.secondary_xaxis(0.05, functions=(mjd2dt, dt2mjd), transform=fig.transFi
 x2.xaxis.set_minor_locator(mdates.MonthLocator())
 x2.xaxis.set_major_locator(mdates.YearLocator())
 
+x2.tick_params(axis='both', which='major', pad=2)
+
 # Get y pos from 
 # b = x2.get_xticklabels()[0].get_window_extent() 
 # fig.transFigure.inverted().transform((b.x0, b.y0+0.5*b.height))
 fig.text(0.0, 0, 'Date [Year]', transform=fig.transFigure, ha='left', va='bottom')
-fig.text(0.0, 0.07076772, 'Date [MJD]', transform=fig.transFigure, ha='left', va='center')
+fig.text(0.0, 0.0725, 'Date [MJD]', transform=fig.transFigure, ha='left', va='center')
 fig.text(0.0, 0.47, r'Heliolongitude ($\lambda$) [$^\circ$]', 
          transform=fig.transFigure, ha='left', va='center', rotation='vertical')
 
-for ax, letter in zip([ax1, ax2, ax3, ax4], ['a', 'b', 'c', 'd']):
+for ax, letter in zip([ax0, ax1, ax2, ax3, ax4], ['a', 'b', 'c', 'd', 'e']):
     ax.annotate("({})".format(letter), (0,1), (10,-10), xycoords='axes fraction', textcoords='offset pixels', 
                 ha='left', va='top', color='white')
     
-for ax, letter in zip([ax5, ax6], ['e', 'f']):
+for ax, letter in zip([ax5, ax6], ['f', 'g']):
     ax.annotate("({})".format(letter), (0,1), (10,-10), xycoords='axes fraction', textcoords='offset pixels', 
                 ha='left', va='top', color='black')
 
@@ -897,13 +1008,20 @@ plt.savefig(experiment_dir / "3_3DGPR_Performance_option1.png", dpi=600)
 plt.savefig(experiment_dir / "3_3DGPR_Performance_option1.pdf")
 
 # Print Improvement metrics
+gp['P'] = gp['σm']/gp['σd']
+omni['P'] = omni['σm']/omni['σd']
+sta['P'] = sta['σm']/sta['σd']
+omni_LI['P'] = omni_LI['σm']/omni_LI['σd']
+sta_LI['P'] = sta_LI['σm']/sta_LI['σd']
+blend['P'] = blend['σm']/blend['σd']
+blend_LI['P'] = blend_LI['σm']/blend_LI['σd']
 gp['abs_1-P'] = np.abs(1 - gp['σm']/gp['σd'])
 omni['abs_1-P'] = np.abs(1 - omni['σm']/omni['σd'])
 sta['abs_1-P'] = np.abs(1 - sta['σm']/sta['σd'])
 
 omni_comparison = []
 sta_comparison = []
-for col in ['P', 'r', 'RMSE', 'PE']:
+for col in ['abs_1-P', 'r', 'RMSE', 'PE']:
     omni_comparison.append(((gp[col] - omni[col])/omni[col]).to_numpy()[0])
     sta_comparison.append(((gp[col] - sta[col])/sta[col]).to_numpy()[0])
     

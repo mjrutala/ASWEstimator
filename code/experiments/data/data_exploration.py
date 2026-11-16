@@ -13,7 +13,7 @@ import numpy as np
 import scipy
 import time 
 import pandas as pd
-import statsmodels as sm
+# import statsmodels as sm
 import astropy.units as u
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn import metrics
@@ -111,9 +111,14 @@ fig, axd = plt.subplot_mosaic("""
 plt.subplots_adjust(hspace=0.15, wspace=0.1,
                     left=0.075, bottom=0.15, 
                     right=1-0.01, top=1-0.01)
-c_omni  = '#90be6d'
-c_sta   = '#43aa8b'
-c_stb   = '#577590'
+# c_omni  = '#90be6d'
+# c_sta   = '#43aa8b'
+# c_stb   = '#577590'
+c_sta   = [0.978422, 0.557937, 0.034931, 1.      ]
+c_blend = [0.865006, 0.316822, 0.226055, 1.      ]
+c_omni  = [0.658463, 0.178962, 0.372748, 1.      ]
+c_gp    = [0.416331, 0.090203, 0.432943, 1.      ]
+c_stb   = [0.169575, 0.042489, 0.340874, 1.      ]
 
 solar_wind_daily = inputs.solar_wind.groupby(inputs.solar_wind['mjd'].round()).mean()
 
@@ -192,7 +197,7 @@ axd['e'].set(ylim=[-12, 12], yticks=[-8, 0, 8])
 # axd['f'].set(ylim=[0.9, 1.15], yticks=[0.9, 1.0, 1.1])
 
 
-axd['b'].set(ylabel = 'Flow Speed $U$ [km/s]')
+axd['b'].set(ylabel = 'Flow Speed $U$ [km s$^{-1}$]')
 axd['d'].set(ylabel = '$\lambda$ [$^{\circ}$]')
 axd['e'].set(ylabel = '$\phi$ [$^{\circ}$]')
 # axd['f'].set(ylabel = 'r [AU]')
@@ -203,12 +208,13 @@ dt2mjd = lambda x: Time(mdates.num2date(x), format='datetime').mjd
 x2 = axd['e'].secondary_xaxis(0.07, functions=(mjd2dt, dt2mjd), transform=fig.transFigure)
 x2.xaxis.set_minor_locator(mdates.MonthLocator())
 x2.xaxis.set_major_locator(mdates.YearLocator())
-
+x2.xaxis.set_tick_params(pad=1)
+    
 # Get y pos from 
 # b = x2.get_xticklabels()[0].get_window_extent() 
 # fig.transFigure.inverted().transform((b.x0, b.y0+0.5*b.height))
-fig.text(0.0, 0.01479167, 'Date [Year]', transform=fig.transFigure, ha='left', va='center')
-fig.text(0.0, 0.09479167, 'Date [MJD]', transform=fig.transFigure, ha='left', va='center')
+fig.text(0.0, 0.02240885, 'Date [Year]', transform=fig.transFigure, ha='left', va='center')
+fig.text(0.0, 0.10240885, 'Date [MJD]', transform=fig.transFigure, ha='left', va='center')
 
 for ax in [axd[key] for key in ['a', 'b', 'c']]:
     ax.set(ylim = [250, 900], yticks=[300, 700])
@@ -222,6 +228,8 @@ for key, ax in axd.items():
     ax.set(xlim=[inputs.starttime.mjd, inputs.stoptime.mjd])
     ax.grid(True, which='major', axis='x', color='black', alpha=0.75, zorder=-99, lw=0.5)
     
+plt.tick_params(axis='x', which='major', pad=1)
+
 plt.savefig(experiment_dir / '1_data_exploration.png', dpi=300)
 plt.show()
 
