@@ -91,7 +91,7 @@ class SolarWindData:
         self.resolution = '1h'
         self.variables = ['U', 'n', 'B', 'Br']
         
-        self.path = Path('/Users/mrutala/projects/OHTransients/data/')
+        self.path = Path('/Users/mrutala/projects/ASWEstimator/data/')
         filename = (source + ' 1hr.csv.zip').replace(' ', '_')
         self.filepath = self.path / (filename)
         
@@ -129,6 +129,7 @@ class SolarWindData:
             
             # Find datetimes missing from dt_index
             missing_set = set(self.data.index) - set(data_df.index)
+            
             if len(missing_set) > 0:
                 
                 missing_index = pd.DatetimeIndex(np.sort(list(missing_set)))
@@ -155,7 +156,7 @@ class SolarWindData:
         
         # very minor post-processing to decrease NaNs
         data_df = data_df.apply(pd.to_numeric, errors='coerce')
-        data_df = data_df.interpolate('time', limit=6, 
+        data_df = data_df.interpolate('time', limit=12, 
                                       limit_direction='both', limit_area='inside')
       
         # Assign this to self.data
@@ -166,6 +167,10 @@ class SolarWindData:
         # Wrap up by updating/creating the csv
         self.update_csv(self.data)
         
+        if (data_df['U'] < 0).any():
+            data_df['U'] = np.where(data_df['U'] > 0, data_df['U'], np.nan)
+        # if data_df['U'].isna().any() or (data_df['U'] < 0).any():
+        #     breakpoint()
         return data_df
     
     def update_csv(self, df):
@@ -373,7 +378,7 @@ class SolarWindData:
         # If data exists, rename columns
         if combined_df is not None:
             combined_df.index.name = 'Epoch'
-
+        
         return combined_df
         
     def stereob(self, start, stop):
